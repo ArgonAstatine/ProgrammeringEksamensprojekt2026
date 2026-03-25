@@ -3,6 +3,7 @@ import threading
 import sqlite3
 import json
 import logging
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("Server")
@@ -11,6 +12,9 @@ HOST = "127.0.0.1"
 PORT = 5555
 BUFFER_SIZE = 4096
 
+clients: dict = {}  # username -> ClientHandler
+clients_lock = threading.Lock()
+
 
 def init_db():
     conn = sqlite3.connect("server.db", check_same_thread=False)
@@ -18,6 +22,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id       INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender    TEXT NOT NULL,
+            content   TEXT NOT NULL,
+            timestamp TEXT NOT NULL
         )
     """)
     conn.commit()
@@ -45,8 +57,19 @@ def recv_msgs(buf, sock):
             try:
                 messages.append(json.loads(line))
             except json.JSONDecodeError:
-                log.warning("Ugyldig JSON modtaget: %s", line)
+                log.warning("Ugyldig JSON: %s", line)
     return messages, buf
+
+
+def broadcast(payload, exclude=None):
+    with clients_lock:
+        for username, handler in list(clients.items()):
+            if username == exclude:
+                continue
+            try:
+                send_msg(handler.sock, payload)
+            except OSError:
+                pass
 
 
 class ClientHandler(threading.Thread):
@@ -73,22 +96,32 @@ class ClientHandler(threading.Thread):
             self.close()
 
     def close(self):
-        log.info("Klient disconnectet: %s", self.username or f"{self.addr[0]}:{self.addr[1]}")
+        if self.username:
+            with clients_lock:
+                clients.pop(self.username, None)
+            broadcast({"type": "system", "msg": f"{self.username} har forladt chatten."})
+            log.info("Bruger '%s' disconnectet.", self.username)
+        else:
+            log.info("Ukendt klient disconnectet: %s:%d", *self.addr)
         try:
             self.sock.close()
         except OSError:
             pass
 
-# since nobody reads my code, I like men
-
     def handle(self, msg):
         t = msg.get("type")
+
         if t == "connect":
             username = msg.get("username", "").strip()
             if not username:
                 send_msg(self.sock, {"type": "error", "msg": "Brugernavn må ikke være tomt."})
                 return True
-            self.username = username
+            with clients_lock:
+                if username in clients:
+                    send_msg(self.sock, {"type": "error", "msg": "Brugernavnet er allerede i brug."})
+                    return True
+                self.username = username
+                clients[username] = self
             try:
                 self.db.execute("INSERT OR IGNORE INTO users (username) VALUES (?)", (username,))
                 self.db.commit()
@@ -96,6 +129,31 @@ class ClientHandler(threading.Thread):
                 log.error("DB fejl: %s", e)
             log.info("Bruger '%s' forbundet.", username)
             send_msg(self.sock, {"type": "connected", "msg": f"Velkommen, {username}!"})
+            broadcast({"type": "system", "msg": f"{username} er gået online."}, exclude=username)
+
+        elif t == "message":
+            if not self.username:
+                send_msg(self.sock, {"type": "error", "msg": "Du skal forbinde med et brugernavn først."})
+                return True
+            content = msg.get("content", "").strip()
+            if not content:
+                return True
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            try:
+                self.db.execute(
+                    "INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
+                    (self.username, content, timestamp)
+                )
+                self.db.commit()
+            except sqlite3.Error as e:
+                log.error("DB fejl: %s", e)
+            log.info("[%s] %s: %s", timestamp, self.username, content)
+            broadcast({
+                "type": "message",
+                "sender": self.username,
+                "content": content,
+                "timestamp": timestamp,
+            })
 
         elif t == "disconnect":
             send_msg(self.sock, {"type": "disconnected", "msg": "Forbindelse lukket."})

@@ -28,12 +28,25 @@ def listen(sock, stop_event):
         while "\n" in buf:
             line, buf = buf.split("\n", 1)
             line = line.strip()
-            if line:
-                try:
-                    msg = json.loads(line)
-                    print(f"[Server] {msg.get('msg', msg)}")
-                except json.JSONDecodeError:
-                    print(f"[Server - rå] {line}")
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"[rå] {line}")
+                continue
+
+            t = msg.get("type")
+            if t == "message":
+                print(f"\r[{msg['timestamp']}] {msg['sender']}: {msg['content']}")
+            elif t == "system":
+                print(f"\r*** {msg['msg']} ***")
+            elif t in ("welcome", "connected", "disconnected"):
+                print(f"\r[Server] {msg['msg']}")
+            elif t == "error":
+                print(f"\r[FEJL] {msg['msg']}")
+            elif t == "pong":
+                print("\r[pong]")
 
 
 def main():
@@ -55,22 +68,27 @@ def main():
 
     send_msg(sock, {"type": "connect", "username": username})
 
-    print("Forbundet. Skriv 'exit' for at disconnecte.\n")
+    print("Forbundet. Skriv en besked og tryk Enter. '/exit' for at forlade.\n")
 
     try:
         while not stop_event.is_set():
             try:
-                cmd = input()
+                text = input()
             except EOFError:
                 break
-            if cmd.lower() == "exit":
+
+            if not text:
+                continue
+
+            if text.lower() == "/exit":
                 send_msg(sock, {"type": "disconnect"})
                 stop_event.set()
                 break
-            elif cmd.lower() == "ping":
+            elif text.lower() == "/ping":
                 send_msg(sock, {"type": "ping"})
             else:
-                print(f"Ukendt kommando: '{cmd}'. Prøv 'ping' eller 'exit'.")
+                send_msg(sock, {"type": "message", "content": text})
+
     except KeyboardInterrupt:
         send_msg(sock, {"type": "disconnect"})
     finally:
