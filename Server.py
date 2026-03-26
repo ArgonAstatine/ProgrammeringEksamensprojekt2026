@@ -3,6 +3,7 @@ import threading
 import sqlite3
 import json
 import logging
+import hashlib
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
@@ -21,7 +22,8 @@ def init_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id       INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL
+            username TEXT UNIQUE NOT NULL,
+            password TEXT
         )
     """)
     conn.execute("""
@@ -32,8 +34,16 @@ def init_db():
             timestamp TEXT NOT NULL
         )
     """)
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN password TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
+
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
 def send_msg(sock, payload):
@@ -113,20 +123,40 @@ class ClientHandler(threading.Thread):
 
         if t == "connect":
             username = msg.get("username", "").strip()
-            if not username:
-                send_msg(self.sock, {"type": "error", "msg": "Brugernavn må ikke være tomt."})
+            password = msg.get("password", "").strip()
+            if not username or not password:
+                send_msg(self.sock, {"type": "error", "msg": "Brugernavn og adgangskode må ikke være tomme."})
                 return True
+
+            hashed = hash_password(password)
+            row = self.db.execute(
+                "SELECT password FROM users WHERE username = ?", (username,)
+            ).fetchone()
+
+            if row is None:
+                try:
+                    self.db.execute(
+                        "INSERT INTO users (username, password) VALUES (?, ?)",
+                        (username, hashed)
+                    )
+                    self.db.commit()
+                    log.info("Ny bruger oprettet: '%s'", username)
+                except sqlite3.Error as e:
+                    log.error("DB fejl: %s", e)
+                    send_msg(self.sock, {"type": "error", "msg": "Databasefejl."})
+                    return True
+            else:
+                if row[0] != hashed:
+                    send_msg(self.sock, {"type": "error", "msg": "Forkert adgangskode."})
+                    return True
+
             with clients_lock:
                 if username in clients:
                     send_msg(self.sock, {"type": "error", "msg": "Brugernavnet er allerede i brug."})
                     return True
                 self.username = username
                 clients[username] = self
-            try:
-                self.db.execute("INSERT OR IGNORE INTO users (username) VALUES (?)", (username,))
-                self.db.commit()
-            except sqlite3.Error as e:
-                log.error("DB fejl: %s", e)
+
             log.info("Bruger '%s' forbundet.", username)
             send_msg(self.sock, {"type": "connected", "msg": f"Velkommen, {username}!"})
             broadcast({"type": "system", "msg": f"{username} er gået online."}, exclude=username)

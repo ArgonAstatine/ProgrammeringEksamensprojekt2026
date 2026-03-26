@@ -1,6 +1,7 @@
 import socket
 import threading
 import json
+import os
 import sys
 import tkinter as tk
 from tkinter import filedialog
@@ -9,6 +10,7 @@ from datetime import datetime
 HOST = "127.0.0.1"
 PORT = 5555
 BUFFER_SIZE = 4096
+SESSION_FILE = "session.json"
 
 BG_DARK      = "#1e1f22"
 BG_PANEL     = "#2b2d31"
@@ -37,44 +39,73 @@ def send_msg(sock, payload):
     sock.sendall(data.encode("utf-8"))
 
 
+def load_session():
+    try:
+        with open(SESSION_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_session(data: dict):
+    with open(SESSION_FILE, "w") as f:
+        json.dump(data, f)
+
+
 class LoginWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Chat")
+        self.title("Chat: Log ind")
         self.configure(bg=BG_DARK)
         self.resizable(False, False)
-        self._center(360, 300)
+        self._center(360, 370)
+
+        session = load_session()
 
         tk.Label(self, text="Velkommen!", font=("Segoe UI", 18, "bold"),
-                 bg=BG_DARK, fg=TEXT_MAIN).pack(pady=(28, 4))
+                 bg=BG_DARK, fg=TEXT_MAIN).pack(pady=(24, 4))
 
         tk.Label(self, text="SERVER IP", font=("Segoe UI", 8, "bold"),
                  bg=BG_DARK, fg=TEXT_MUTED).pack(anchor="w", padx=50)
-        self.ip_var = tk.StringVar(value="127.0.0.1")
-        ip_entry = tk.Entry(self, textvariable=self.ip_var, font=FONT_INPUT,
-                            bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
-                            relief="flat", bd=8)
-        ip_entry.pack(padx=50, fill="x", pady=(2, 10))
+        self.ip_var = tk.StringVar(value=session.get("ip", "127.0.0.1"))
+        tk.Entry(self, textvariable=self.ip_var, font=FONT_INPUT,
+                 bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
+                 relief="flat", bd=8).pack(padx=50, fill="x", pady=(2, 10))
 
         tk.Label(self, text="BRUGERNAVN", font=("Segoe UI", 8, "bold"),
                  bg=BG_DARK, fg=TEXT_MUTED).pack(anchor="w", padx=50)
-        self.username_var = tk.StringVar()
-        e = tk.Entry(self, textvariable=self.username_var, font=FONT_INPUT,
-                     bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
-                     relief="flat", bd=8)
-        e.pack(padx=50, fill="x", pady=(2, 6))
-        e.bind("<Return>", lambda _: self._connect())
-        e.focus()
+        self.username_var = tk.StringVar(value=session.get("username", ""))
+        name_entry = tk.Entry(self, textvariable=self.username_var, font=FONT_INPUT,
+                              bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
+                              relief="flat", bd=8)
+        name_entry.pack(padx=50, fill="x", pady=(2, 10))
+
+        tk.Label(self, text="ADGANGSKODE", font=("Segoe UI", 8, "bold"),
+                 bg=BG_DARK, fg=TEXT_MUTED).pack(anchor="w", padx=50)
+        self.pw_var = tk.StringVar()
+        pw_entry = tk.Entry(self, textvariable=self.pw_var, font=FONT_INPUT,
+                            bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
+                            relief="flat", bd=8, show="•")
+        pw_entry.pack(padx=50, fill="x", pady=(2, 6))
+        pw_entry.bind("<Return>", lambda _: self._connect())
+
+        if session.get("username"):
+            pw_entry.focus()
+        else:
+            name_entry.focus()
 
         self.status = tk.Label(self, text="", font=FONT_SMALL,
                                bg=BG_DARK, fg="#f04747")
         self.status.pack()
 
-        btn = tk.Button(self, text="Log ind", font=("Segoe UI", 10, "bold"),
-                        bg=ACCENT, fg="white", relief="flat", bd=0,
-                        activebackground=ACCENT_HOVER, activeforeground="white",
-                        padx=20, pady=8, cursor="hand2", command=self._connect)
-        btn.pack(pady=8, padx=50, fill="x")
+        tk.Button(self, text="Log ind / Opret konto", font=("Segoe UI", 10, "bold"),
+                  bg=ACCENT, fg="white", relief="flat", bd=0,
+                  activebackground=ACCENT_HOVER, activeforeground="white",
+                  padx=20, pady=8, cursor="hand2", command=self._connect
+                  ).pack(pady=8, padx=50, fill="x")
+
+        tk.Label(self, text="Nyt brugernavn? Konto oprettes automatisk.",
+                 font=FONT_SMALL, bg=BG_DARK, fg=TEXT_MUTED).pack()
 
     def _center(self, w, h):
         self.update_idletasks()
@@ -84,10 +115,16 @@ class LoginWindow(tk.Tk):
 
     def _connect(self):
         username = self.username_var.get().strip()
+        password = self.pw_var.get().strip()
         ip = self.ip_var.get().strip() or "127.0.0.1"
+
         if not username:
             self.status.config(text="Indtast et brugernavn.")
             return
+        if not password:
+            self.status.config(text="Indtast en adgangskode.")
+            return
+
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((ip, PORT))
@@ -97,15 +134,19 @@ class LoginWindow(tk.Tk):
         except OSError as e:
             self.status.config(text=f"Fejl: {e}")
             return
+
+        save_session({"username": username, "ip": ip})
+
         self.destroy()
-        ChatApp(sock, username).mainloop()
+        ChatApp(sock, username, password).mainloop()
 
 
 class ChatApp(tk.Tk):
-    def __init__(self, sock, username):
+    def __init__(self, sock, username, password=""):
         super().__init__()
         self.sock = sock
         self.username = username
+        self.password = password
         self.active_chat = None
         self.stop_event = threading.Event()
         self.buf = ""
@@ -118,7 +159,7 @@ class ChatApp(tk.Tk):
 
         self._build_ui()
         self._start_listener()
-        send_msg(self.sock, {"type": "connect", "username": username})
+        send_msg(self.sock, {"type": "connect", "username": username, "password": password})
         self._tick()
 
     def _center(self):
