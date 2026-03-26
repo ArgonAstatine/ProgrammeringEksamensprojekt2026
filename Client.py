@@ -43,13 +43,21 @@ class LoginWindow(tk.Tk):
         self.title("Chat")
         self.configure(bg=BG_DARK)
         self.resizable(False, False)
-        self._center(360, 240)
+        self._center(360, 300)
 
         tk.Label(self, text="Velkommen!", font=("Segoe UI", 18, "bold"),
-                 bg=BG_DARK, fg=TEXT_MAIN).pack(pady=(36, 4))
+                 bg=BG_DARK, fg=TEXT_MAIN).pack(pady=(28, 4))
+
+        tk.Label(self, text="SERVER IP", font=("Segoe UI", 8, "bold"),
+                 bg=BG_DARK, fg=TEXT_MUTED).pack(anchor="w", padx=50)
+        self.ip_var = tk.StringVar(value="127.0.0.1")
+        ip_entry = tk.Entry(self, textvariable=self.ip_var, font=FONT_INPUT,
+                            bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
+                            relief="flat", bd=8)
+        ip_entry.pack(padx=50, fill="x", pady=(2, 10))
+
         tk.Label(self, text="BRUGERNAVN", font=("Segoe UI", 8, "bold"),
                  bg=BG_DARK, fg=TEXT_MUTED).pack(anchor="w", padx=50)
-
         self.username_var = tk.StringVar()
         e = tk.Entry(self, textvariable=self.username_var, font=FONT_INPUT,
                      bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
@@ -76,14 +84,18 @@ class LoginWindow(tk.Tk):
 
     def _connect(self):
         username = self.username_var.get().strip()
+        ip = self.ip_var.get().strip() or "127.0.0.1"
         if not username:
             self.status.config(text="Indtast et brugernavn.")
             return
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((HOST, PORT))
+            sock.connect((ip, PORT))
         except ConnectionRefusedError:
-            self.status.config(text=f"Kunne ikke forbinde til {HOST}:{PORT}")
+            self.status.config(text=f"Kunne ikke forbinde til {ip}:{PORT}")
+            return
+        except OSError as e:
+            self.status.config(text=f"Fejl: {e}")
             return
         self.destroy()
         ChatApp(sock, username).mainloop()

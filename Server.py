@@ -8,11 +8,11 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("Server")
 
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT = 5555
 BUFFER_SIZE = 4096
 
-clients: dict = {}  # username -> ClientHandler
+clients: dict = {}
 clients_lock = threading.Lock()
 
 
@@ -169,12 +169,17 @@ class ClientHandler(threading.Thread):
 
 
 def main():
+    import socket as _s
+    hostname = _s.gethostname()
+    local_ip = _s.gethostbyname(hostname)
+
     db = init_db()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((HOST, PORT))
     server.listen()
-    log.info("Server lytter på %s:%d", HOST, PORT)
+    log.info("Server kører på %s:%d", local_ip, PORT)
+    log.info("Andre klienter forbinder med IP: %s  port: %d", local_ip, PORT)
     try:
         while True:
             conn, addr = server.accept()
