@@ -4,6 +4,9 @@ import sqlite3
 import json
 import logging
 from datetime import datetime
+import base64
+
+from Client import MAX_MESSAGE_LENGTH, MAX_FILE_SIZE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("Server")
@@ -100,9 +103,9 @@ class ClientHandler(threading.Thread):
             with clients_lock:
                 clients.pop(self.username, None)
             broadcast({"type": "system", "msg": f"{self.username} har forladt chatten."})
-            log.info("Bruger '%s' disconnectet.", self.username)
+            log.info("Bruger '%s' disconnectede.", self.username)
         else:
-            log.info("Ukendt klient disconnectet: %s:%d", *self.addr)
+            log.info("Ukendt klient disconnectede: %s:%d", *self.addr)
         try:
             self.sock.close()
         except OSError:
@@ -138,6 +141,9 @@ class ClientHandler(threading.Thread):
             content = msg.get("content", "").strip()
             if not content:
                 return True
+            if len(content) > MAX_MESSAGE_LENGTH:
+                send_msg(self.sock, {"type": "error", "msg": f"Besked overskrider maks beskedlængde på {MAX_MESSAGE_LENGTH} tegn."})
+                return True
             timestamp = datetime.now().strftime("%H:%M:%S")
             try:
                 self.db.execute(
@@ -161,6 +167,29 @@ class ClientHandler(threading.Thread):
 
         elif t == "ping":
             send_msg(self.sock, {"type": "pong"})
+
+        elif t == "file":
+            if not self.username:
+                send_ms(self.sock, {"type": "error", "msg": "Du skal med et brugernavn først."})
+                return True
+            filename = msg.get("filename", "fil")
+            print(f"debug filename: {filename!r}")
+            data = msg.get("data", "")
+            raw_bytes = len(base64.b64decode(data, validate = False))
+            if raw_bytes > MAX_FILE_SIZE:
+                send_msg(self.sock, {"type": "error", "msg": "Fil overskrider maks filstørrelse på {MAX_FILE_SIZE // 1024} KB."})
+                return True
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            try:
+                self.db.execute(
+                    "INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
+                    (self.username, f"(fil: {filename})", timestamp)
+                )
+                self.db.commit()
+            except sqlite3.Error as e:
+                log.error("DB fejl: %s", e)
+            log.info("[%s] %s sendte fil: %s", timestamp, self.username, f"(fil: {filename})")
+            broadcast({"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp})
 
         else:
             send_msg(self.sock, {"type": "error", "msg": f"Ukendt beskedtype: '{t}'"})

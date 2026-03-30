@@ -5,12 +5,17 @@ import sys
 import tkinter as tk
 from tkinter import filedialog
 from datetime import datetime
+import base64
+import os
+
 
 HOST = "127.0.0.1"
 PORT = 5555
 BUFFER_SIZE = 4096
+MAX_MESSAGE_LENGTH = 2048
+MAX_FILE_SIZE = 1 * 1024 * 1024 # 1 megabyte :D ændr 1-tallet if so
 
-BG_DARK      = "#1e1f22"
+BG_DARK      = "#1e1f22" # "vi har discord derhjemme"
 BG_PANEL     = "#2b2d31"
 BG_CHAT      = "#313338"
 BG_INPUT     = "#383a40"
@@ -263,10 +268,28 @@ class ChatApp(tk.Tk):
 
     def _attach_file(self):
         path = filedialog.askopenfilename(title="Vælg fil")
-        if path:
-            fname = path.split("/")[-1]
-            self._add_bubble(f"📄 {fname}", sender=self.username,
-                             timestamp=datetime.now().strftime("%H:%M"), is_file=True)
+        if not path:
+            return
+        fname = os.path.basename(path)
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            self._add_bubble(f"Fejl ved fillæsning, prøv igen: {e}", sender="system",
+                             timestamp="",is_system=True)
+            return
+        if len(raw) > MAX_FILE_SIZE:
+            self._add_bubble(f"Filen er for stor; maks. filstørrelse er {MAX_FILE_SIZE // 1024} KB.",
+                         sender="system",timestamp="",is_system=True)
+            return
+        encoded = base64.b64encode(raw).decode("utf-8")
+        send_msg(self.sock,{
+            "type": "file",
+            "filename": fname,
+            "data": encoded,
+        })
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._add_bubble(f"{fname} blev sendt", sender = self.username,timestamp=ts)
 
     def _add_bubble(self, content, sender, timestamp, is_file=False, is_system=False):
         outer = tk.Frame(self.msg_inner, bg=BG_CHAT)
@@ -353,6 +376,24 @@ class ChatApp(tk.Tk):
                              timestamp="", is_system=True)
         elif t == "disconnected":
             self.after(200, self._on_close)
+        elif t == "file":
+            sender = msg.get("sender", "?")
+            filename = msg.get("filename", "fil")
+            data = msg.get("data", "")
+            ts = msg.get("timestamp", "")
+
+            downloads_dir = os.path.join(os.path.expanduser("~"),"Downloads")
+            os.makedirs(downloads_dir, exist_ok=True)
+            save_path = os.path.join(downloads_dir, filename)
+            try:
+                with open(save_path, "wb") as f:
+                    f.write(base64.b64decode(data))
+                label = f" {filename} gemt i Downloads/" # altså i pycharmprojects, ikke bare download på computeren ofc
+            except OSError as e:
+                label = f" {filename} (FEJL ved download: {e})"
+            self._add_bubble(label, sender=sender, timestamp=ts,)
+            if sender != self.username:
+                self._ensure_friend(sender)
 
     def _ensure_friend(self, name):
         existing = list(self.friend_list.get(0, "end"))
