@@ -2,15 +2,15 @@ import socket
 import threading
 import json
 import os
-import sys
 import tkinter as tk
 from tkinter import filedialog
 from datetime import datetime
+from cryptography.fernet import Fernet
 
-HOST = "127.0.0.1"
 PORT = 5555
 BUFFER_SIZE = 4096
-SESSION_FILE = "session.json"
+SESSION_PATH = "session.json.enc"
+SESSION_KEY_PATH = "session.key"
 
 BG_DARK      = "#1e1f22"
 BG_PANEL     = "#2b2d31"
@@ -24,7 +24,6 @@ TEXT_TIME    = "#80848e"
 BUBBLE_ME    = "#5865f2"
 BUBBLE_OTHER = "#2e3035"
 BUBBLE_SYS   = "#80848e"
-ONLINE_DOT   = "#23a55a"
 SEPARATOR    = "#3f4147"
 
 FONT_TITLE = ("Segoe UI", 11, "bold")
@@ -34,22 +33,35 @@ FONT_INPUT = ("Segoe UI", 11)
 FONT_NAME  = ("Segoe UI", 9, "bold")
 
 
-def send_msg(sock, payload):
-    data = json.dumps(payload) + "\n"
-    sock.sendall(data.encode("utf-8"))
+def get_session_fernet() -> Fernet:
+    if os.path.exists(SESSION_KEY_PATH):
+        with open(SESSION_KEY_PATH, "rb") as f:
+            key = f.read()
+    else:
+        key = Fernet.generate_key()
+        with open(SESSION_KEY_PATH, "wb") as f:
+            f.write(key)
+    return Fernet(key)
 
 
-def load_session():
+def load_session() -> dict:
+    fernet = get_session_fernet()
     try:
-        with open(SESSION_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        with open(SESSION_PATH, "rb") as f:
+            return json.loads(fernet.decrypt(f.read()).decode())
+    except Exception:
         return {}
 
 
 def save_session(data: dict):
-    with open(SESSION_FILE, "w") as f:
-        json.dump(data, f)
+    fernet = get_session_fernet()
+    with open(SESSION_PATH, "wb") as f:
+        f.write(fernet.encrypt(json.dumps(data).encode()))
+
+
+def send_msg(sock, payload):
+    data = json.dumps(payload) + "\n"
+    sock.sendall(data.encode("utf-8"))
 
 
 class LoginWindow(tk.Tk):
@@ -87,7 +99,7 @@ class LoginWindow(tk.Tk):
                             bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
                             relief="flat", bd=8, show="•")
         pw_entry.pack(padx=50, fill="x", pady=(2, 6))
-        pw_entry.bind("<Return>", lambda _: self._connect())
+        pw_entry.bind("<Return>", lambda _: self._login())
 
         if session.get("username"):
             pw_entry.focus()
@@ -101,11 +113,28 @@ class LoginWindow(tk.Tk):
         tk.Button(self, text="Log ind / Opret konto", font=("Segoe UI", 10, "bold"),
                   bg=ACCENT, fg="white", relief="flat", bd=0,
                   activebackground=ACCENT_HOVER, activeforeground="white",
-                  padx=20, pady=8, cursor="hand2", command=self._connect
+                  padx=20, pady=8, cursor="hand2", command=self._login
                   ).pack(pady=8, padx=50, fill="x")
 
         tk.Label(self, text="Nyt brugernavn? Konto oprettes automatisk.",
                  font=FONT_SMALL, bg=BG_DARK, fg=TEXT_MUTED).pack()
+
+        self.sock = None
+        self._try_auto_login(session)
+
+    def _try_auto_login(self, session):
+        token = session.get("token")
+        ip    = session.get("ip", "127.0.0.1")
+        username = session.get("username", "")
+        if not token or not username:
+            return
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ip, PORT))
+        except OSError:
+            return
+        self.destroy()
+        ChatApp(sock, username, token=token, ip=ip).mainloop()
 
     def _center(self, w, h):
         self.update_idletasks()
@@ -113,18 +142,16 @@ class LoginWindow(tk.Tk):
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
 
-    def _connect(self):
+    def _login(self):
         username = self.username_var.get().strip()
-        password = self.pw_var.get().strip()
-        ip = self.ip_var.get().strip() or "127.0.0.1"
-
+        password = self.pw_var.get()
+        ip       = self.ip_var.get().strip() or "127.0.0.1"
         if not username:
             self.status.config(text="Indtast et brugernavn.")
             return
         if not password:
             self.status.config(text="Indtast en adgangskode.")
             return
-
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((ip, PORT))
@@ -134,21 +161,20 @@ class LoginWindow(tk.Tk):
         except OSError as e:
             self.status.config(text=f"Fejl: {e}")
             return
-
-        save_session({"username": username, "ip": ip})
-
         self.destroy()
-        ChatApp(sock, username, password).mainloop()
+        ChatApp(sock, username, password=password, ip=ip).mainloop()
 
 
 class ChatApp(tk.Tk):
-    def __init__(self, sock, username, password=""):
+    def __init__(self, sock, username, password="", token="", ip="127.0.0.1"):
         super().__init__()
-        self.sock = sock
+        self.sock     = sock
         self.username = username
         self.password = password
+        self.token    = token
+        self.ip       = ip
         self.active_chat = None
-        self.stop_event = threading.Event()
+        self.stop_event  = threading.Event()
         self.buf = ""
 
         self.title("Chat")
@@ -159,7 +185,12 @@ class ChatApp(tk.Tk):
 
         self._build_ui()
         self._start_listener()
-        send_msg(self.sock, {"type": "connect", "username": username, "password": password})
+
+        if token:
+            send_msg(self.sock, {"type": "connect", "token": token})
+        else:
+            send_msg(self.sock, {"type": "connect", "username": username, "password": password})
+
         self._tick()
 
     def _center(self):
@@ -243,10 +274,8 @@ class ChatApp(tk.Tk):
         self.canvas = tk.Canvas(msg_frame, bg=BG_CHAT, highlightthickness=0, bd=0)
         self.canvas.pack(side="left", fill="both", expand=True)
 
-        vscroll = tk.Scrollbar(msg_frame, orient="vertical",
-                               command=self.canvas.yview,
-                               bg=BG_CHAT, troughcolor=BG_CHAT,
-                               relief="flat", bd=0, width=8)
+        vscroll = tk.Scrollbar(msg_frame, orient="vertical", command=self.canvas.yview,
+                               bg=BG_CHAT, troughcolor=BG_CHAT, relief="flat", bd=0, width=8)
         vscroll.pack(side="right", fill="y")
         self.canvas.configure(yscrollcommand=vscroll.set)
 
@@ -266,11 +295,10 @@ class ChatApp(tk.Tk):
         input_wrap = tk.Frame(bottom, bg=BG_INPUT, padx=4, pady=4)
         input_wrap.pack(fill="x", padx=16)
 
-        file_btn = tk.Button(input_wrap, text="+", font=("Segoe UI", 13, "bold"),
-                             bg=BG_INPUT, fg=TEXT_MUTED, relief="flat", bd=0,
-                             activebackground=BG_INPUT, activeforeground=TEXT_MAIN,
-                             cursor="hand2", command=self._attach_file, padx=6)
-        file_btn.pack(side="left")
+        tk.Button(input_wrap, text="+", font=("Segoe UI", 13, "bold"),
+                  bg=BG_INPUT, fg=TEXT_MUTED, relief="flat", bd=0,
+                  activebackground=BG_INPUT, activeforeground=TEXT_MAIN,
+                  cursor="hand2", command=self._attach_file, padx=6).pack(side="left")
 
         self.input_var = tk.StringVar()
         self.input_field = tk.Entry(input_wrap, textvariable=self.input_var,
@@ -371,7 +399,15 @@ class ChatApp(tk.Tk):
 
     def _handle_msg(self, msg):
         t = msg.get("type")
-        if t == "message":
+        if t == "connected":
+            token = msg.get("token", "")
+            if token:
+                save_session({"username": self.username, "ip": self.ip, "token": token})
+            self._add_bubble(msg.get("msg", ""), sender="system", timestamp="", is_system=True)
+        elif t == "auth_error":
+            self._add_bubble(f"Auth fejl: {msg.get('msg','')}", sender="system",
+                             timestamp="", is_system=True)
+        elif t == "message":
             sender  = msg.get("sender", "?")
             content = msg.get("content", "")
             ts      = msg.get("timestamp", "")
@@ -379,16 +415,14 @@ class ChatApp(tk.Tk):
             if sender != self.username:
                 self._ensure_friend(sender)
         elif t == "system":
-            self._add_bubble(msg.get("msg", ""), sender="system",
-                             timestamp="", is_system=True)
+            self._add_bubble(msg.get("msg", ""), sender="system", timestamp="", is_system=True)
             text = msg.get("msg", "")
             if "online" in text:
                 name = text.split()[0]
                 if name != self.username:
                     self._ensure_friend(name)
-        elif t in ("welcome", "connected"):
-            self._add_bubble(msg.get("msg", ""), sender="system",
-                             timestamp="", is_system=True)
+        elif t in ("welcome",):
+            pass
         elif t == "error":
             self._add_bubble(f"Fejl: {msg.get('msg','')}", sender="system",
                              timestamp="", is_system=True)

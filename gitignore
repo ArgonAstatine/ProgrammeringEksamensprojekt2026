@@ -1,0 +1,13 @@
+# Krypterede databaser
+server.db
+server.db.enc
+server.key
+
+# Krypteret session
+session.json.enc
+session.key
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

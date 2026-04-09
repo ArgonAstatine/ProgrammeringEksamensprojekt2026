@@ -4,7 +4,11 @@ import sqlite3
 import json
 import logging
 import hashlib
+import hmac
+import os
+import secrets
 from datetime import datetime
+from cryptography.fernet import Fernet
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("Server")
@@ -12,18 +16,49 @@ log = logging.getLogger("Server")
 HOST = "0.0.0.0"
 PORT = 5555
 BUFFER_SIZE = 4096
+PBKDF2_ITERATIONS = 260_000
+DB_ENC_PATH = "server.db.enc"
+KEY_PATH    = "server.key"
 
-clients: dict = {}
+clients:  dict = {}
 clients_lock = threading.Lock()
+db_lock      = threading.Lock()
 
 
-def init_db():
-    conn = sqlite3.connect("server.db", check_same_thread=False)
+def load_or_create_key() -> bytes:
+    if os.path.exists(KEY_PATH):
+        with open(KEY_PATH, "rb") as f:
+            return f.read()
+    key = Fernet.generate_key()
+    with open(KEY_PATH, "wb") as f:
+        f.write(key)
+    log.info("Ny krypteringsnøgle genereret: %s", KEY_PATH)
+    return key
+
+
+def load_db(fernet: Fernet) -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    if os.path.exists(DB_ENC_PATH):
+        with open(DB_ENC_PATH, "rb") as f:
+            raw = fernet.decrypt(f.read())
+        tmp = sqlite3.connect(":memory:")
+        tmp.executescript(raw.decode("utf-8"))
+        tmp.backup(conn)
+        tmp.close()
+        log.info("Database indlæst og dekrypteret fra %s", DB_ENC_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id       INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created       TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token    TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            created  TEXT NOT NULL
         )
     """)
     conn.execute("""
@@ -34,16 +69,32 @@ def init_db():
             timestamp TEXT NOT NULL
         )
     """)
-    try:
-        conn.execute("ALTER TABLE users ADD COLUMN password TEXT")
-    except sqlite3.OperationalError:
-        pass
     conn.commit()
     return conn
 
 
+def save_db(fernet: Fernet, conn: sqlite3.Connection):
+    dump = "\n".join(conn.iterdump())
+    encrypted = fernet.encrypt(dump.encode("utf-8"))
+    with open(DB_ENC_PATH, "wb") as f:
+        f.write(encrypted)
+
+
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    salt = os.urandom(32)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
+    return salt.hex() + ":" + key.hex()
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt_hex, key_hex = stored.split(":")
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(key_hex)
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
 
 
 def send_msg(sock, payload):
@@ -83,17 +134,18 @@ def broadcast(payload, exclude=None):
 
 
 class ClientHandler(threading.Thread):
-    def __init__(self, sock, addr, db):
+    def __init__(self, sock, addr, db, fernet):
         super().__init__(daemon=True)
-        self.sock = sock
-        self.addr = addr
-        self.db = db
+        self.sock   = sock
+        self.addr   = addr
+        self.db     = db
+        self.fernet = fernet
         self.username = None
         self.buf = ""
 
     def run(self):
         log.info("Klient forbundet: %s:%d", *self.addr)
-        send_msg(self.sock, {"type": "welcome", "msg": "Forbundet til server."})
+        send_msg(self.sock, {"type": "welcome"})
         try:
             while True:
                 messages, self.buf = recv_msgs(self.buf, self.sock)
@@ -118,72 +170,45 @@ class ClientHandler(threading.Thread):
         except OSError:
             pass
 
+    def db_write(self, sql, params=()):
+        with db_lock:
+            self.db.execute(sql, params)
+            self.db.commit()
+            save_db(self.fernet, self.db)
+
+    def db_read(self, sql, params=()):
+        with db_lock:
+            return self.db.execute(sql, params).fetchone()
+
     def handle(self, msg):
         t = msg.get("type")
 
         if t == "connect":
+            token    = msg.get("token", "")
             username = msg.get("username", "").strip()
-            password = msg.get("password", "").strip()
-            if not username or not password:
-                send_msg(self.sock, {"type": "error", "msg": "Brugernavn og adgangskode må ikke være tomme."})
-                return True
-
-            hashed = hash_password(password)
-            row = self.db.execute(
-                "SELECT password FROM users WHERE username = ?", (username,)
-            ).fetchone()
-
-            if row is None:
-                try:
-                    self.db.execute(
-                        "INSERT INTO users (username, password) VALUES (?, ?)",
-                        (username, hashed)
-                    )
-                    self.db.commit()
-                    log.info("Ny bruger oprettet: '%s'", username)
-                except sqlite3.Error as e:
-                    log.error("DB fejl: %s", e)
-                    send_msg(self.sock, {"type": "error", "msg": "Databasefejl."})
-                    return True
+            password = msg.get("password", "")
+            if token:
+                self._login_by_token(token)
+            elif username and password:
+                self._login_or_register(username, password)
             else:
-                if row[0] != hashed:
-                    send_msg(self.sock, {"type": "error", "msg": "Forkert adgangskode."})
-                    return True
-
-            with clients_lock:
-                if username in clients:
-                    send_msg(self.sock, {"type": "error", "msg": "Brugernavnet er allerede i brug."})
-                    return True
-                self.username = username
-                clients[username] = self
-
-            log.info("Bruger '%s' forbundet.", username)
-            send_msg(self.sock, {"type": "connected", "msg": f"Velkommen, {username}!"})
-            broadcast({"type": "system", "msg": f"{username} er gået online."}, exclude=username)
+                send_msg(self.sock, {"type": "auth_error", "msg": "Manglende legitimationsoplysninger."})
 
         elif t == "message":
             if not self.username:
-                send_msg(self.sock, {"type": "error", "msg": "Du skal forbinde med et brugernavn først."})
+                send_msg(self.sock, {"type": "error", "msg": "Ikke logget ind."})
                 return True
             content = msg.get("content", "").strip()
             if not content:
                 return True
             timestamp = datetime.now().strftime("%H:%M:%S")
-            try:
-                self.db.execute(
-                    "INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
-                    (self.username, content, timestamp)
-                )
-                self.db.commit()
-            except sqlite3.Error as e:
-                log.error("DB fejl: %s", e)
+            self.db_write(
+                "INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
+                (self.username, content, timestamp)
+            )
             log.info("[%s] %s: %s", timestamp, self.username, content)
-            broadcast({
-                "type": "message",
-                "sender": self.username,
-                "content": content,
-                "timestamp": timestamp,
-            })
+            broadcast({"type": "message", "sender": self.username,
+                       "content": content, "timestamp": timestamp})
 
         elif t == "disconnect":
             send_msg(self.sock, {"type": "disconnected", "msg": "Forbindelse lukket."})
@@ -197,25 +222,71 @@ class ClientHandler(threading.Thread):
 
         return True
 
+    def _login_or_register(self, username, password):
+        row = self.db_read("SELECT password_hash FROM users WHERE username = ?", (username,))
+        if row is None:
+            pw_hash = hash_password(password)
+            now = datetime.now().isoformat()
+            self.db_write("INSERT INTO users (username, password_hash, created) VALUES (?, ?, ?)",
+                          (username, pw_hash, now))
+            log.info("Ny bruger oprettet: '%s'", username)
+        else:
+            if not verify_password(password, row[0]):
+                send_msg(self.sock, {"type": "auth_error", "msg": "Forkert adgangskode."})
+                return
+        token = self._create_session(username)
+        self._finalize_login(username, token)
+
+    def _login_by_token(self, token):
+        row = self.db_read("SELECT username FROM sessions WHERE token = ?", (token,))
+        if not row:
+            send_msg(self.sock, {"type": "auth_error", "msg": "Session udløbet. Log ind igen."})
+            return
+        self._finalize_login(row[0], token)
+
+    def _create_session(self, username) -> str:
+        token = secrets.token_hex(32)
+        now = datetime.now().isoformat()
+        with db_lock:
+            self.db.execute("DELETE FROM sessions WHERE username = ?", (username,))
+            self.db.execute("INSERT INTO sessions (token, username, created) VALUES (?, ?, ?)",
+                            (token, username, now))
+            self.db.commit()
+            save_db(self.fernet, self.db)
+        return token
+
+    def _finalize_login(self, username, token):
+        with clients_lock:
+            if username in clients:
+                send_msg(self.sock, {"type": "auth_error", "msg": "Brugeren er allerede logget ind."})
+                return
+            self.username = username
+            clients[username] = self
+        log.info("Bruger '%s' logget ind.", username)
+        send_msg(self.sock, {"type": "connected", "msg": f"Velkommen, {username}!", "token": token})
+        broadcast({"type": "system", "msg": f"{username} er gået online."}, exclude=username)
+
 
 def main():
-    import socket as _s
-    hostname = _s.gethostname()
-    local_ip = _s.gethostbyname(hostname)
+    fernet = Fernet(load_or_create_key())
+    db = load_db(fernet)
 
-    db = init_db()
+    import socket as _s
+    local_ip = _s.gethostbyname(_s.gethostname())
+
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((HOST, PORT))
     server.listen()
     log.info("Server kører på %s:%d", local_ip, PORT)
-    log.info("Andre klienter forbinder med IP: %s  port: %d", local_ip, PORT)
     try:
         while True:
             conn, addr = server.accept()
-            ClientHandler(conn, addr, db).start()
+            ClientHandler(conn, addr, db, fernet).start()
     except KeyboardInterrupt:
-        log.info("Server lukker ned.")
+        log.info("Gemmer og lukker ned...")
+        with db_lock:
+            save_db(fernet, db)
     finally:
         server.close()
 
