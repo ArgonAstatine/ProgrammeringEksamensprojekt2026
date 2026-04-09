@@ -453,7 +453,7 @@ class ChatApp(tk.Tk):
         except OSError:
             pass
         self.destroy()
-
+ #test
 
 if __name__ == "__main__":
     LoginWindow().mainloop()
