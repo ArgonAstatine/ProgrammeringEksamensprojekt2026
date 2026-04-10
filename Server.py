@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import base64
 from datetime import datetime
 from cryptography.fernet import Fernet
 
@@ -15,14 +16,18 @@ log = logging.getLogger("Server")
 
 HOST = "0.0.0.0"
 PORT = 5555
-BUFFER_SIZE = 4096
+BUFFER_SIZE       = 4096
 PBKDF2_ITERATIONS = 260_000
+MAX_MESSAGE_LENGTH = 2048
+MAX_FILE_SIZE      = 1 * 1024 * 1024  # 1 MB – ændr 1-tallet if so
 DB_ENC_PATH = "server.db.enc"
 KEY_PATH    = "server.key"
 
-clients:  dict = {}
+clients:      dict = {}
 clients_lock = threading.Lock()
 db_lock      = threading.Lock()
+
+
 
 
 def load_or_create_key() -> bytes:
@@ -80,6 +85,7 @@ def save_db(fernet: Fernet, conn: sqlite3.Connection):
         f.write(encrypted)
 
 
+
 def hash_password(password: str) -> str:
     salt = os.urandom(32)
     key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
@@ -89,9 +95,9 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, stored: str) -> bool:
     try:
         salt_hex, key_hex = stored.split(":")
-        salt = bytes.fromhex(salt_hex)
+        salt     = bytes.fromhex(salt_hex)
         expected = bytes.fromhex(key_hex)
-        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
+        actual   = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
         return hmac.compare_digest(actual, expected)
     except Exception:
         return False
@@ -133,19 +139,20 @@ def broadcast(payload, exclude=None):
                 pass
 
 
+
 class ClientHandler(threading.Thread):
     def __init__(self, sock, addr, db, fernet):
         super().__init__(daemon=True)
-        self.sock   = sock
-        self.addr   = addr
-        self.db     = db
-        self.fernet = fernet
+        self.sock     = sock
+        self.addr     = addr
+        self.db       = db
+        self.fernet   = fernet
         self.username = None
-        self.buf = ""
+        self.buf      = ""
 
     def run(self):
         log.info("Klient forbundet: %s:%d", *self.addr)
-        send_msg(self.sock, {"type": "welcome"})
+        send_msg(self.sock, {"type": "welcome", "msg": "Forbundet til server."})
         try:
             while True:
                 messages, self.buf = recv_msgs(self.buf, self.sock)
@@ -161,14 +168,16 @@ class ClientHandler(threading.Thread):
         if self.username:
             with clients_lock:
                 clients.pop(self.username, None)
+            broadcast({"type": "presence", "event": "offline", "username": self.username})
             broadcast({"type": "system", "msg": f"{self.username} har forladt chatten."})
-            log.info("Bruger '%s' disconnectet.", self.username)
+            log.info("Bruger '%s' disconnectede.", self.username)
         else:
-            log.info("Ukendt klient disconnectet: %s:%d", *self.addr)
+            log.info("Ukendt klient disconnectede: %s:%d", *self.addr)
         try:
             self.sock.close()
         except OSError:
             pass
+
 
     def db_write(self, sql, params=()):
         with db_lock:
@@ -179,6 +188,7 @@ class ClientHandler(threading.Thread):
     def db_read(self, sql, params=()):
         with db_lock:
             return self.db.execute(sql, params).fetchone()
+
 
     def handle(self, msg):
         t = msg.get("type")
@@ -201,14 +211,72 @@ class ClientHandler(threading.Thread):
             content = msg.get("content", "").strip()
             if not content:
                 return True
+            if len(content) > MAX_MESSAGE_LENGTH:
+                send_msg(self.sock, {
+                    "type": "error",
+                    "msg": f"Besked overskrider maks. {MAX_MESSAGE_LENGTH} tegn."
+                })
+                return True
+            recipient = msg.get("recipient")
             timestamp = datetime.now().strftime("%H:%M:%S")
             self.db_write(
                 "INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
                 (self.username, content, timestamp)
             )
-            log.info("[%s] %s: %s", timestamp, self.username, content)
-            broadcast({"type": "message", "sender": self.username,
-                       "content": content, "timestamp": timestamp})
+            if recipient:
+                with clients_lock:
+                    target = clients.get(recipient)
+                if not target:
+                    send_msg(self.sock, {"type": "error", "msg": f"Bruger '{recipient}' er ikke online."})
+                    return True
+                log.info("[%s] %s -> %s: %s", timestamp, self.username, recipient, content)
+                send_msg(target.sock, {
+                    "type": "message", "sender": self.username,
+                    "content": content, "timestamp": timestamp, "recipient": recipient,
+                })
+            else:
+                log.info("[%s] %s: %s", timestamp, self.username, content)
+                broadcast({
+                    "type": "message", "sender": self.username,
+                    "content": content, "timestamp": timestamp,
+                }, exclude=self.username)
+
+        elif t == "file":
+            if not self.username:
+                send_msg(self.sock, {"type": "error", "msg": "Ikke logget ind."})
+                return True
+            filename  = msg.get("filename", "fil")
+            data      = msg.get("data", "")
+            raw_bytes = len(base64.b64decode(data, validate=False))
+            if raw_bytes > MAX_FILE_SIZE:
+                send_msg(self.sock, {
+                    "type": "error",
+                    "msg": f"Fil overskrider maks. filstørrelse på {MAX_FILE_SIZE // 1024} KB."
+                })
+                return True
+            recipient = msg.get("recipient")
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.db_write(
+                "INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
+                (self.username, f"(fil: {filename})", timestamp)
+            )
+            if recipient:
+                with clients_lock:
+                    target = clients.get(recipient)
+                if not target:
+                    send_msg(self.sock, {"type": "error", "msg": f"Bruger '{recipient}' er ikke online."})
+                    return True
+                log.info("[%s] %s -> %s sendte fil: %s", timestamp, self.username, recipient, filename)
+                send_msg(target.sock, {
+                    "type": "file", "sender": self.username, "filename": filename,
+                    "data": data, "timestamp": timestamp, "recipient": recipient,
+                })
+            else:
+                log.info("[%s] %s sendte fil: %s", timestamp, self.username, filename)
+                broadcast({
+                    "type": "file", "sender": self.username,
+                    "filename": filename, "data": data, "timestamp": timestamp,
+                }, exclude=self.username)
 
         elif t == "disconnect":
             send_msg(self.sock, {"type": "disconnected", "msg": "Forbindelse lukket."})
@@ -222,13 +290,16 @@ class ClientHandler(threading.Thread):
 
         return True
 
+
     def _login_or_register(self, username, password):
         row = self.db_read("SELECT password_hash FROM users WHERE username = ?", (username,))
         if row is None:
             pw_hash = hash_password(password)
             now = datetime.now().isoformat()
-            self.db_write("INSERT INTO users (username, password_hash, created) VALUES (?, ?, ?)",
-                          (username, pw_hash, now))
+            self.db_write(
+                "INSERT INTO users (username, password_hash, created) VALUES (?, ?, ?)",
+                (username, pw_hash, now)
+            )
             log.info("Ny bruger oprettet: '%s'", username)
         else:
             if not verify_password(password, row[0]):
@@ -246,11 +317,13 @@ class ClientHandler(threading.Thread):
 
     def _create_session(self, username) -> str:
         token = secrets.token_hex(32)
-        now = datetime.now().isoformat()
+        now   = datetime.now().isoformat()
         with db_lock:
             self.db.execute("DELETE FROM sessions WHERE username = ?", (username,))
-            self.db.execute("INSERT INTO sessions (token, username, created) VALUES (?, ?, ?)",
-                            (token, username, now))
+            self.db.execute(
+                "INSERT INTO sessions (token, username, created) VALUES (?, ?, ?)",
+                (token, username, now)
+            )
             self.db.commit()
             save_db(self.fernet, self.db)
         return token
@@ -263,13 +336,23 @@ class ClientHandler(threading.Thread):
             self.username = username
             clients[username] = self
         log.info("Bruger '%s' logget ind.", username)
-        send_msg(self.sock, {"type": "connected", "msg": f"Velkommen, {username}!", "token": token})
+        with clients_lock:
+            online_users = [name for name in clients if name != username]
+        send_msg(self.sock, {
+            "type": "connected",
+            "msg": f"Velkommen, {username}!",
+            "token": token,
+        })
+        send_msg(self.sock, {"type": "presence", "event": "list", "users": online_users})
+        broadcast({"type": "presence", "event": "online", "username": username}, exclude=username)
         broadcast({"type": "system", "msg": f"{username} er gået online."}, exclude=username)
+
+
 
 
 def main():
     fernet = Fernet(load_or_create_key())
-    db = load_db(fernet)
+    db     = load_db(fernet)
 
     import socket as _s
     local_ip = _s.gethostbyname(_s.gethostname())
@@ -279,6 +362,7 @@ def main():
     server.bind((HOST, PORT))
     server.listen()
     log.info("Server kører på %s:%d", local_ip, PORT)
+    log.info("Andre klienter forbinder med IP: %s  port: %d", local_ip, PORT)
     try:
         while True:
             conn, addr = server.accept()

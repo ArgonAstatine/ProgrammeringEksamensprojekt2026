@@ -3,12 +3,18 @@ import threading
 import json
 import os
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 from datetime import datetime
 from cryptography.fernet import Fernet
+import base64
+
+ # this is a homemade merge :D (because SOMEONE decided to rewrite ALL THE CODE without our recent commits..... so we had like 100+ merge conflicts....)
+
 
 PORT = 5555
 BUFFER_SIZE = 4096
+MAX_MESSAGE_LENGTH = 2048
+MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB – ændr 1-tallet if so
 SESSION_PATH = "session.json.enc"
 SESSION_KEY_PATH = "session.key"
 
@@ -24,6 +30,7 @@ TEXT_TIME    = "#80848e"
 BUBBLE_ME    = "#5865f2"
 BUBBLE_OTHER = "#2e3035"
 BUBBLE_SYS   = "#80848e"
+ONLINE_DOT   = "#23a55a"
 SEPARATOR    = "#3f4147"
 
 FONT_TITLE = ("Segoe UI", 11, "bold")
@@ -31,6 +38,8 @@ FONT_BODY  = ("Segoe UI", 10)
 FONT_SMALL = ("Segoe UI", 8)
 FONT_INPUT = ("Segoe UI", 11)
 FONT_NAME  = ("Segoe UI", 9, "bold")
+
+
 
 
 def get_session_fernet() -> Fernet:
@@ -62,6 +71,8 @@ def save_session(data: dict):
 def send_msg(sock, payload):
     data = json.dumps(payload) + "\n"
     sock.sendall(data.encode("utf-8"))
+
+
 
 
 class LoginWindow(tk.Tk):
@@ -119,12 +130,11 @@ class LoginWindow(tk.Tk):
         tk.Label(self, text="Nyt brugernavn? Konto oprettes automatisk.",
                  font=FONT_SMALL, bg=BG_DARK, fg=TEXT_MUTED).pack()
 
-        self.sock = None
         self._try_auto_login(session)
 
     def _try_auto_login(self, session):
-        token = session.get("token")
-        ip    = session.get("ip", "127.0.0.1")
+        token    = session.get("token")
+        ip       = session.get("ip", "127.0.0.1")
         username = session.get("username", "")
         if not token or not username:
             return
@@ -165,17 +175,21 @@ class LoginWindow(tk.Tk):
         ChatApp(sock, username, password=password, ip=ip).mainloop()
 
 
+
+
 class ChatApp(tk.Tk):
     def __init__(self, sock, username, password="", token="", ip="127.0.0.1"):
         super().__init__()
-        self.sock     = sock
-        self.username = username
-        self.password = password
-        self.token    = token
-        self.ip       = ip
+        self.sock        = sock
+        self.username    = username
+        self.password    = password
+        self.token       = token
+        self.ip          = ip
         self.active_chat = None
         self.stop_event  = threading.Event()
-        self.buf = ""
+        self.buf         = ""
+        self.user_status = {}
+        self.chat_history = {"#alle": []}
 
         self.title("Chat")
         self.configure(bg=BG_DARK)
@@ -198,6 +212,8 @@ class ChatApp(tk.Tk):
         x = (self.winfo_screenwidth() - 960) // 2
         y = (self.winfo_screenheight() - 640) // 2
         self.geometry(f"960x640+{x}+{y}")
+
+
 
     def _build_ui(self):
         self.left = tk.Frame(self, bg=BG_PANEL, width=220)
@@ -252,9 +268,11 @@ class ChatApp(tk.Tk):
 
         broadcast_row = tk.Frame(self.left, bg=BG_PANEL, cursor="hand2")
         broadcast_row.pack(fill="x", padx=8, pady=(0, 8))
-        tk.Label(broadcast_row, text="  # alle", font=FONT_BODY,
-                 bg=BG_PANEL, fg=TEXT_MUTED, anchor="w", pady=5).pack(fill="x")
+        broadcast_label = tk.Label(broadcast_row, text="  # alle", font=FONT_BODY,
+                                   bg=BG_PANEL, fg=TEXT_MUTED, anchor="w", pady=5)
+        broadcast_label.pack(fill="x")
         broadcast_row.bind("<Button-1>", lambda _: self._select_broadcast())
+        broadcast_label.bind("<Button-1>", lambda _: self._select_broadcast())
 
         self.right = tk.Frame(self, bg=BG_CHAT)
         self.right.pack(side="right", fill="both", expand=True)
@@ -313,9 +331,28 @@ class ChatApp(tk.Tk):
                   activebackground=ACCENT_HOVER, activeforeground="white",
                   padx=12, pady=2, cursor="hand2", command=self._send).pack(side="right", padx=4)
 
+
+
     def _tick(self):
         self.date_label.config(text=datetime.now().strftime("%d/%m/%Y  %H:%M"))
         self.after(30000, self._tick)
+
+    def _chat_key(self):
+        return self.active_chat if self.active_chat is not None else "#alle"
+
+    def _store_message(self, chat_key, payload):
+        self.chat_history.setdefault(chat_key, []).append(payload)
+
+    def _refresh_chat(self):
+        for child in self.msg_inner.winfo_children():
+            child.destroy()
+        for msg in self.chat_history.get(self._chat_key(), []):
+            self._render_bubble(
+                msg["content"], sender=msg["sender"], timestamp=msg["timestamp"],
+                is_file=msg["is_file"], filename=msg.get("filename"),
+                file_data=msg.get("file_data"), is_system=msg.get("is_system", False)
+            )
+        self._scroll_bottom()
 
     def _on_friend_select(self, _=None):
         sel = self.friend_list.curselection()
@@ -324,20 +361,64 @@ class ChatApp(tk.Tk):
         name = self.friend_list.get(sel[0]).lstrip("● ").strip()
         self.active_chat = name
         self.header_label.config(text=f"@ {name}")
+        self._refresh_chat()
 
     def _select_broadcast(self):
         self.active_chat = None
         self.friend_list.selection_clear(0, "end")
         self.header_label.config(text="# alle")
+        self._refresh_chat()
+
+
 
     def _attach_file(self):
         path = filedialog.askopenfilename(title="Vælg fil")
-        if path:
-            fname = path.split("/")[-1]
-            self._add_bubble(f"📄 {fname}", sender=self.username,
-                             timestamp=datetime.now().strftime("%H:%M"), is_file=True)
+        if not path:
+            return
+        fname = os.path.basename(path)
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            self._add_bubble(f"Fejl ved fillæsning: {e}", sender="system",
+                             timestamp="", is_system=True)
+            return
+        if len(raw) > MAX_FILE_SIZE:
+            self._add_bubble(
+                f"Filen er for stor; maks. filstørrelse er {MAX_FILE_SIZE // 1024} KB.",
+                sender="system", timestamp="", is_system=True)
+            return
+        encoded = base64.b64encode(raw).decode("utf-8")
+        payload = {"type": "file", "filename": fname, "data": encoded}
+        if self.active_chat is not None:
+            payload["recipient"] = self.active_chat
+        send_msg(self.sock, payload)
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._add_bubble(fname, sender=self.username, timestamp=ts,
+                         is_file=True, filename=fname, file_data=encoded)
 
-    def _add_bubble(self, content, sender, timestamp, is_file=False, is_system=False):
+    def _download_file(self, filename, data):
+        if not filename or not data:
+            messagebox.showerror("Download fejl", "Ingen fildata tilgængelig.")
+            return
+        save_path = filedialog.asksaveasfilename(
+            title="Gem fil som",
+            initialfile=filename,
+            defaultextension=os.path.splitext(filename)[1] or ""
+        )
+        if not save_path:
+            return
+        try:
+            with open(save_path, "wb") as f:
+                f.write(base64.b64decode(data))
+            messagebox.showinfo("Download færdig", f"Filen er gemt som:\n{save_path}")
+        except OSError as e:
+            messagebox.showerror("Download fejl", f"Kunne ikke gemme filen:\n{e}")
+
+
+
+    def _render_bubble(self, content, sender, timestamp, is_file=False,
+                       is_system=False, filename=None, file_data=None):
         outer = tk.Frame(self.msg_inner, bg=BG_CHAT)
         outer.pack(fill="x", padx=16, pady=2)
 
@@ -362,15 +443,55 @@ class ChatApp(tk.Tk):
 
         bubble = tk.Frame(outer, bg=BG_CHAT)
         bubble.pack(anchor=align)
-        tk.Label(bubble, text=content, font=FONT_BODY, bg=bg, fg=fg,
-                 wraplength=420, justify="left", padx=12, pady=7,
-                 relief="flat").pack()
+
+        if is_file:
+            row = tk.Frame(bubble, bg=bg)
+            row.pack()
+            tk.Label(row, text=content, font=FONT_BODY, bg=bg, fg=fg,
+                     wraplength=360, justify="left", padx=12, pady=7,
+                     relief="flat").pack(side="left", fill="x", expand=True)
+            tk.Button(row, text="Download", font=FONT_BODY,
+                      bg=ACCENT, fg="white", relief="flat", bd=0,
+                      activebackground=ACCENT_HOVER, activeforeground="white",
+                      cursor="hand2",
+                      command=lambda: self._download_file(filename, file_data)
+                      ).pack(side="right", padx=8, pady=7)
+        else:
+            tk.Label(bubble, text=content, font=FONT_BODY, bg=bg, fg=fg,
+                     wraplength=420, justify="left", padx=12, pady=7,
+                     relief="flat").pack()
 
         self._scroll_bottom()
+
+    def _add_bubble(self, content, sender, timestamp, is_file=False,
+                    is_system=False, filename=None, file_data=None,
+                    chat_key=None, store=True):
+        if is_system:
+            self._render_bubble(content, sender, timestamp,
+                                is_file=is_file, is_system=True,
+                                filename=filename, file_data=file_data)
+            return
+
+        if chat_key is None:
+            chat_key = self._chat_key()
+
+        payload = {
+            "content": content, "sender": sender, "timestamp": timestamp,
+            "is_file": is_file, "filename": filename, "file_data": file_data,
+        }
+        if store:
+            self._store_message(chat_key, payload)
+
+        if chat_key == self._chat_key():
+            self._render_bubble(content, sender, timestamp,
+                                is_file=is_file, filename=filename,
+                                file_data=file_data)
 
     def _scroll_bottom(self):
         self.canvas.update_idletasks()
         self.canvas.yview_moveto(1.0)
+
+
 
     def _start_listener(self):
         threading.Thread(target=self._listen, daemon=True).start()
@@ -399,21 +520,54 @@ class ChatApp(tk.Tk):
 
     def _handle_msg(self, msg):
         t = msg.get("type")
+
         if t == "connected":
             token = msg.get("token", "")
             if token:
                 save_session({"username": self.username, "ip": self.ip, "token": token})
             self._add_bubble(msg.get("msg", ""), sender="system", timestamp="", is_system=True)
+
         elif t == "auth_error":
             self._add_bubble(f"Auth fejl: {msg.get('msg','')}", sender="system",
                              timestamp="", is_system=True)
+
         elif t == "message":
-            sender  = msg.get("sender", "?")
-            content = msg.get("content", "")
-            ts      = msg.get("timestamp", "")
-            self._add_bubble(content, sender=sender, timestamp=ts)
+            sender    = msg.get("sender", "?")
+            content   = msg.get("content", "")
+            ts        = msg.get("timestamp", "")
+            recipient = msg.get("recipient")
+            chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
             if sender != self.username:
                 self._ensure_friend(sender)
+                self._set_friend_status(sender, True)
+            if chat_key == self._chat_key():
+                self._add_bubble(content, sender=sender, timestamp=ts, chat_key=chat_key)
+            else:
+                self._store_message(chat_key, {
+                    "content": content, "sender": sender, "timestamp": ts,
+                    "is_file": False, "filename": None, "file_data": None,
+                })
+
+        elif t == "file":
+            sender    = msg.get("sender", "?")
+            filename  = msg.get("filename", "fil")
+            data      = msg.get("data", "")
+            ts        = msg.get("timestamp", "")
+            recipient = msg.get("recipient")
+            chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
+            if sender != self.username:
+                self._ensure_friend(sender)
+                self._set_friend_status(sender, True)
+            if chat_key == self._chat_key():
+                self._add_bubble(filename, sender=sender, timestamp=ts,
+                                 is_file=True, filename=filename, file_data=data,
+                                 chat_key=chat_key)
+            else:
+                self._store_message(chat_key, {
+                    "content": filename, "sender": sender, "timestamp": ts,
+                    "is_file": True, "filename": filename, "file_data": data,
+                })
+
         elif t == "system":
             self._add_bubble(msg.get("msg", ""), sender="system", timestamp="", is_system=True)
             text = msg.get("msg", "")
@@ -421,26 +575,74 @@ class ChatApp(tk.Tk):
                 name = text.split()[0]
                 if name != self.username:
                     self._ensure_friend(name)
-        elif t in ("welcome",):
-            pass
+
+        elif t == "presence":
+            event = msg.get("event")
+            if event == "list":
+                for name in msg.get("users", []):
+                    if name != self.username:
+                        self._ensure_friend(name)
+                        self._set_friend_status(name, True)
+            elif event == "online":
+                name = msg.get("username", "?")
+                if name != self.username:
+                    self._ensure_friend(name)
+                    self._set_friend_status(name, True)
+            elif event == "offline":
+                name = msg.get("username", "?")
+                if name != self.username:
+                    self._ensure_friend(name)
+                    self._set_friend_status(name, False)
+
+        elif t in ("welcome", "connected"):
+            self._add_bubble(msg.get("msg", ""), sender="system", timestamp="", is_system=True)
+
         elif t == "error":
             self._add_bubble(f"Fejl: {msg.get('msg','')}", sender="system",
                              timestamp="", is_system=True)
+
         elif t == "disconnected":
             self.after(200, self._on_close)
 
+    # friends yuhh
+
     def _ensure_friend(self, name):
+        if name == self.username:
+            return
         existing = list(self.friend_list.get(0, "end"))
-        display = f"● {name}"
+        display  = f"● {name}"
         if display not in existing:
             self.friend_list.insert("end", display)
+            idx = self.friend_list.size() - 1
+            self.friend_list.itemconfig(idx, fg="#f04747")
+            self.user_status[name] = False
+
+    def _set_friend_status(self, name, online: bool):
+        if name == self.username:
+            return
+        existing = list(self.friend_list.get(0, "end"))
+        display  = f"● {name}"
+        if display not in existing:
+            self._ensure_friend(name)
+            existing = list(self.friend_list.get(0, "end"))
+        idx   = existing.index(display)
+        color = ONLINE_DOT if online else "#f04747"
+        self.friend_list.itemconfig(idx, fg=color)
+        self.user_status[name] = online
+
+
 
     def _send(self):
         text = self.input_var.get().strip()
         if not text:
             return
         self.input_var.set("")
-        send_msg(self.sock, {"type": "message", "content": text})
+        payload = {"type": "message", "content": text}
+        if self.active_chat is not None:
+            payload["recipient"] = self.active_chat
+        send_msg(self.sock, payload)
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._add_bubble(text, sender=self.username, timestamp=ts)
 
     def _on_close(self):
         try:
@@ -453,7 +655,7 @@ class ChatApp(tk.Tk):
         except OSError:
             pass
         self.destroy()
- #test
+
 
 if __name__ == "__main__":
     LoginWindow().mainloop()
