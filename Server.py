@@ -310,6 +310,7 @@ class ClientHandler(threading.Thread):
                     "data": data, "timestamp": timestamp, "msg_id": msg_id,
                 })
 
+
         elif t == "delete":
             if not self.username:
                 send_msg(self.sock, {"type": "error", "msg": "Ikke logget ind."})
@@ -326,18 +327,20 @@ class ClientHandler(threading.Thread):
             if sender != self.username:
                 send_msg(self.sock, {"type": "error", "msg": "Du kan kun slette dine egne beskeder."})
                 return True
+
             self.db_write("DELETE FROM messages WHERE id = ?", (msg_id,))
             log.info("Bruger '%s' slettede besked id=%s", self.username, msg_id)
-            chat_key = recipient if recipient else "#alle"
-            delete_payload = {"type": "deleted", "msg_id": msg_id, "chat_key": chat_key}
+
             if recipient:
                 with clients_lock:
                     target = clients.get(recipient)
+                send_msg(self.sock, {"type": "deleted", "msg_id": msg_id, "chat_key": recipient})
                 if target:
-                    send_msg(target.sock, delete_payload)
+                    send_msg(target.sock, {"type": "deleted", "msg_id": msg_id, "chat_key": sender})
+
             else:
-                broadcast(delete_payload, exclude=self.username)
-            send_msg(self.sock, delete_payload)
+                broadcast({"type": "deleted", "msg_id": msg_id, "chat_key": "#alle"}, exclude=self.username)
+                send_msg(self.sock, {"type": "deleted", "msg_id": msg_id, "chat_key": "#alle"})
 
         elif t == "disconnect":
             send_msg(self.sock, {"type": "disconnected", "msg": "Forbindelse lukket."})
