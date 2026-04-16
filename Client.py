@@ -8,7 +8,7 @@ from datetime import datetime
 from cryptography.fernet import Fernet
 import base64
 
- # this is a homemade merge :D (because SOMEONE decided to rewrite ALL THE CODE without our recent commits..... so we had like 100+ merge conflicts....)
+
 
 
 PORT = 5555
@@ -190,6 +190,7 @@ class ChatApp(tk.Tk):
         self.buf         = ""
         self.user_status = {}
         self.chat_history = {"#alle": []}
+        self.bubble_frames = {"#alle": []}
 
         self.title("Chat")
         self.configure(bg=BG_DARK)
@@ -342,16 +343,21 @@ class ChatApp(tk.Tk):
 
     def _store_message(self, chat_key, payload):
         self.chat_history.setdefault(chat_key, []).append(payload)
+        self.bubble_frames.setdefault(chat_key, []).append(None)
 
     def _refresh_chat(self):
         for child in self.msg_inner.winfo_children():
             child.destroy()
-        for msg in self.chat_history.get(self._chat_key(), []):
-            self._render_bubble(
+        key = self._chat_key()
+        self.bubble_frames[key] = []
+        for i, msg in enumerate(self.chat_history.get(key, [])):
+            frame = self._render_bubble(
                 msg["content"], sender=msg["sender"], timestamp=msg["timestamp"],
                 is_file=msg["is_file"], filename=msg.get("filename"),
-                file_data=msg.get("file_data"), is_system=msg.get("is_system", False)
+                file_data=msg.get("file_data"), is_system=msg.get("is_system", False),
+                msg_index=i, chat_key=key
             )
+            self.bubble_frames[key].append(frame)
         self._scroll_bottom()
 
     def _on_friend_select(self, _=None):
@@ -368,8 +374,6 @@ class ChatApp(tk.Tk):
         self.friend_list.selection_clear(0, "end")
         self.header_label.config(text="# alle")
         self._refresh_chat()
-
-
 
     def _attach_file(self):
         path = filedialog.askopenfilename(title="Vælg fil")
@@ -393,9 +397,6 @@ class ChatApp(tk.Tk):
         if self.active_chat is not None:
             payload["recipient"] = self.active_chat
         send_msg(self.sock, payload)
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._add_bubble(fname, sender=self.username, timestamp=ts,
-                         is_file=True, filename=fname, file_data=encoded)
 
     def _download_file(self, filename, data):
         if not filename or not data:
@@ -418,7 +419,8 @@ class ChatApp(tk.Tk):
 
 
     def _render_bubble(self, content, sender, timestamp, is_file=False,
-                       is_system=False, filename=None, file_data=None):
+                       is_system=False, filename=None, file_data=None,
+                       msg_index=None, chat_key=None):
         outer = tk.Frame(self.msg_inner, bg=BG_CHAT)
         outer.pack(fill="x", padx=16, pady=2)
 
@@ -426,7 +428,7 @@ class ChatApp(tk.Tk):
             tk.Label(outer, text=content, font=FONT_SMALL,
                      bg=BG_CHAT, fg=BUBBLE_SYS).pack(pady=2)
             self._scroll_bottom()
-            return
+            return outer
 
         is_me = (sender == self.username)
         bg    = BUBBLE_ME if is_me else BUBBLE_OTHER
@@ -440,6 +442,14 @@ class ChatApp(tk.Tk):
                      bg=BG_CHAT, fg=ACCENT).pack(side="left", padx=(0, 6))
         tk.Label(meta, text=timestamp, font=FONT_SMALL,
                  bg=BG_CHAT, fg=TEXT_TIME).pack(side="left")
+
+        if is_me and msg_index is not None and chat_key is not None:
+            del_btn = tk.Label(meta, text="🗑", font=FONT_SMALL,
+                               bg=BG_CHAT, fg=TEXT_MUTED, cursor="hand2")
+            del_btn.pack(side="left", padx=(6, 0))
+            del_btn.bind("<Button-1>", lambda _, i=msg_index, k=chat_key: self._delete_message(i, k))
+            del_btn.bind("<Enter>", lambda e: e.widget.config(fg="#f04747"))
+            del_btn.bind("<Leave>", lambda e: e.widget.config(fg=TEXT_MUTED))
 
         bubble = tk.Frame(outer, bg=BG_CHAT)
         bubble.pack(anchor=align)
@@ -462,10 +472,33 @@ class ChatApp(tk.Tk):
                      relief="flat").pack()
 
         self._scroll_bottom()
+        return outer
+
+    def _delete_message(self, msg_index, chat_key):
+        history = self.chat_history.get(chat_key, [])
+        if msg_index >= len(history):
+            return
+        msg = history[msg_index]
+        if msg.get("sender") != self.username:
+            return
+        msg_id = msg.get("msg_id")
+        if msg_id is None:
+            return
+        payload = {"type": "delete", "msg_id": msg_id}
+        if chat_key != "#alle":
+            payload["recipient"] = chat_key
+        send_msg(self.sock, payload)
+
+    def _remove_message_locally(self, msg_id, chat_key):
+        history = self.chat_history.get(chat_key, [])
+        new_history = [m for m in history if m.get("msg_id") != msg_id]
+        self.chat_history[chat_key] = new_history
+        if chat_key == self._chat_key():
+            self._refresh_chat()
 
     def _add_bubble(self, content, sender, timestamp, is_file=False,
                     is_system=False, filename=None, file_data=None,
-                    chat_key=None, store=True):
+                    chat_key=None, store=True, msg_id=None):
         if is_system:
             self._render_bubble(content, sender, timestamp,
                                 is_file=is_file, is_system=True,
@@ -478,14 +511,25 @@ class ChatApp(tk.Tk):
         payload = {
             "content": content, "sender": sender, "timestamp": timestamp,
             "is_file": is_file, "filename": filename, "file_data": file_data,
+            "msg_id": msg_id,
         }
         if store:
             self._store_message(chat_key, payload)
+            msg_index = len(self.chat_history[chat_key]) - 1
+        else:
+            msg_index = None
 
         if chat_key == self._chat_key():
-            self._render_bubble(content, sender, timestamp,
-                                is_file=is_file, filename=filename,
-                                file_data=file_data)
+            frame = self._render_bubble(content, sender, timestamp,
+                                        is_file=is_file, filename=filename,
+                                        file_data=file_data, msg_index=msg_index,
+                                        chat_key=chat_key)
+            if store:
+                self.bubble_frames.setdefault(chat_key, [])
+                if len(self.bubble_frames[chat_key]) < len(self.chat_history[chat_key]):
+                    self.bubble_frames[chat_key].append(frame)
+                else:
+                    self.bubble_frames[chat_key][msg_index] = frame
 
     def _scroll_bottom(self):
         self.canvas.update_idletasks()
@@ -531,21 +575,26 @@ class ChatApp(tk.Tk):
             self._add_bubble(f"Auth fejl: {msg.get('msg','')}", sender="system",
                              timestamp="", is_system=True)
 
+
         elif t == "message":
-            sender    = msg.get("sender", "?")
-            content   = msg.get("content", "")
-            ts        = msg.get("timestamp", "")
+            sender = msg.get("sender", "?")
+            content = msg.get("content", "")
+            ts = msg.get("timestamp", "")
+            msg_id = msg.get("msg_id")
             recipient = msg.get("recipient")
-            chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
+            chat_key = (sender if sender != self.username else recipient) if recipient else "#alle"
+
             if sender != self.username:
                 self._ensure_friend(sender)
                 self._set_friend_status(sender, True)
             if chat_key == self._chat_key():
-                self._add_bubble(content, sender=sender, timestamp=ts, chat_key=chat_key)
+                self._add_bubble(content, sender=sender, timestamp=ts,
+                                 chat_key=chat_key, msg_id=msg_id)
             else:
                 self._store_message(chat_key, {
                     "content": content, "sender": sender, "timestamp": ts,
                     "is_file": False, "filename": None, "file_data": None,
+                    "msg_id": msg_id,
                 })
 
         elif t == "file":
@@ -553,6 +602,7 @@ class ChatApp(tk.Tk):
             filename  = msg.get("filename", "fil")
             data      = msg.get("data", "")
             ts        = msg.get("timestamp", "")
+            msg_id    = msg.get("msg_id")
             recipient = msg.get("recipient")
             chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
             if sender != self.username:
@@ -561,12 +611,19 @@ class ChatApp(tk.Tk):
             if chat_key == self._chat_key():
                 self._add_bubble(filename, sender=sender, timestamp=ts,
                                  is_file=True, filename=filename, file_data=data,
-                                 chat_key=chat_key)
+                                 chat_key=chat_key, msg_id=msg_id)
             else:
                 self._store_message(chat_key, {
                     "content": filename, "sender": sender, "timestamp": ts,
                     "is_file": True, "filename": filename, "file_data": data,
+                    "msg_id": msg_id,
                 })
+
+        elif t == "deleted":
+            msg_id   = msg.get("msg_id")
+            chat_key = msg.get("chat_key", "#alle")
+            if msg_id:
+                self._remove_message_locally(msg_id, chat_key)
 
         elif t == "system":
             self._add_bubble(msg.get("msg", ""), sender="system", timestamp="", is_system=True)
@@ -630,8 +687,6 @@ class ChatApp(tk.Tk):
         self.friend_list.itemconfig(idx, fg=color)
         self.user_status[name] = online
 
-
-
     def _send(self):
         text = self.input_var.get().strip()
         if not text:
@@ -641,8 +696,6 @@ class ChatApp(tk.Tk):
         if self.active_chat is not None:
             payload["recipient"] = self.active_chat
         send_msg(self.sock, payload)
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._add_bubble(text, sender=self.username, timestamp=ts)
 
     def _on_close(self):
         try:

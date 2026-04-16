@@ -71,9 +71,13 @@ def load_db(fernet: Fernet) -> sqlite3.Connection:
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             sender    TEXT NOT NULL,
             content   TEXT NOT NULL,
-            timestamp TEXT NOT NULL
+            timestamp TEXT NOT NULL,
+            recipient TEXT
         )
     """)
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+    if "recipient" not in existing_cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
     conn.commit()
     return conn
 
@@ -189,6 +193,13 @@ class ClientHandler(threading.Thread):
         with db_lock:
             return self.db.execute(sql, params).fetchone()
 
+    def db_write_returning(self, sql, params=()):
+        with db_lock:
+            cur = self.db.execute(sql, params)
+            self.db.commit()
+            save_db(self.fernet, self.db)
+            return cur.lastrowid
+
 
     def handle(self, msg):
         t = msg.get("type")
@@ -219,9 +230,9 @@ class ClientHandler(threading.Thread):
                 return True
             recipient = msg.get("recipient")
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.db_write(
-                "INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
-                (self.username, content, timestamp)
+            msg_id = self.db_write_returning(
+                "INSERT INTO messages (sender, content, timestamp, recipient) VALUES (?, ?, ?, ?)",
+                (self.username, content, timestamp, recipient)
             )
             if recipient:
                 with clients_lock:
@@ -232,14 +243,24 @@ class ClientHandler(threading.Thread):
                 log.info("[%s] %s -> %s: %s", timestamp, self.username, recipient, content)
                 send_msg(target.sock, {
                     "type": "message", "sender": self.username,
-                    "content": content, "timestamp": timestamp, "recipient": recipient,
+                    "content": content, "timestamp": timestamp,
+                    "recipient": recipient, "msg_id": msg_id,
+                })
+                send_msg(self.sock, {
+                    "type": "message", "sender": self.username,
+                    "content": content, "timestamp": timestamp,
+                    "recipient": recipient, "msg_id": msg_id,
                 })
             else:
                 log.info("[%s] %s: %s", timestamp, self.username, content)
                 broadcast({
                     "type": "message", "sender": self.username,
-                    "content": content, "timestamp": timestamp,
+                    "content": content, "timestamp": timestamp, "msg_id": msg_id,
                 }, exclude=self.username)
+                send_msg(self.sock, {
+                    "type": "message", "sender": self.username,
+                    "content": content, "timestamp": timestamp, "msg_id": msg_id,
+                })
 
         elif t == "file":
             if not self.username:
@@ -256,9 +277,9 @@ class ClientHandler(threading.Thread):
                 return True
             recipient = msg.get("recipient")
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.db_write(
-                "INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
-                (self.username, f"(fil: {filename})", timestamp)
+            msg_id = self.db_write_returning(
+                "INSERT INTO messages (sender, content, timestamp, recipient) VALUES (?, ?, ?, ?)",
+                (self.username, f"(fil: {filename})", timestamp, recipient)
             )
             if recipient:
                 with clients_lock:
@@ -269,14 +290,54 @@ class ClientHandler(threading.Thread):
                 log.info("[%s] %s -> %s sendte fil: %s", timestamp, self.username, recipient, filename)
                 send_msg(target.sock, {
                     "type": "file", "sender": self.username, "filename": filename,
-                    "data": data, "timestamp": timestamp, "recipient": recipient,
+                    "data": data, "timestamp": timestamp,
+                    "recipient": recipient, "msg_id": msg_id,
+                })
+                send_msg(self.sock, {
+                    "type": "file", "sender": self.username, "filename": filename,
+                    "data": data, "timestamp": timestamp,
+                    "recipient": recipient, "msg_id": msg_id,
                 })
             else:
                 log.info("[%s] %s sendte fil: %s", timestamp, self.username, filename)
                 broadcast({
                     "type": "file", "sender": self.username,
-                    "filename": filename, "data": data, "timestamp": timestamp,
+                    "filename": filename, "data": data,
+                    "timestamp": timestamp, "msg_id": msg_id,
                 }, exclude=self.username)
+                send_msg(self.sock, {
+                    "type": "file", "sender": self.username, "filename": filename,
+                    "data": data, "timestamp": timestamp, "msg_id": msg_id,
+                })
+
+        elif t == "delete":
+            if not self.username:
+                send_msg(self.sock, {"type": "error", "msg": "Ikke logget ind."})
+                return True
+            msg_id = msg.get("msg_id")
+            if not msg_id:
+                send_msg(self.sock, {"type": "error", "msg": "Manglende besked-id."})
+                return True
+            row = self.db_read("SELECT sender, recipient FROM messages WHERE id = ?", (msg_id,))
+            if not row:
+                send_msg(self.sock, {"type": "error", "msg": "Beskeden findes ikke."})
+                return True
+            sender, recipient = row
+            if sender != self.username:
+                send_msg(self.sock, {"type": "error", "msg": "Du kan kun slette dine egne beskeder."})
+                return True
+            self.db_write("DELETE FROM messages WHERE id = ?", (msg_id,))
+            log.info("Bruger '%s' slettede besked id=%s", self.username, msg_id)
+            chat_key = recipient if recipient else "#alle"
+            delete_payload = {"type": "deleted", "msg_id": msg_id, "chat_key": chat_key}
+            if recipient:
+                with clients_lock:
+                    target = clients.get(recipient)
+                if target:
+                    send_msg(target.sock, delete_payload)
+            else:
+                broadcast(delete_payload, exclude=self.username)
+            send_msg(self.sock, delete_payload)
 
         elif t == "disconnect":
             send_msg(self.sock, {"type": "disconnected", "msg": "Forbindelse lukket."})
@@ -330,14 +391,18 @@ class ClientHandler(threading.Thread):
 
     def _finalize_login(self, username, token):
         with clients_lock:
-            if username in clients:
+            # Only block if this exact username is already connected
+            if username in clients and clients[username] is not self:
                 send_msg(self.sock, {"type": "auth_error", "msg": "Brugeren er allerede logget ind."})
                 return
             self.username = username
             clients[username] = self
+
         log.info("Bruger '%s' logget ind.", username)
+
         with clients_lock:
             online_users = [name for name in clients if name != username]
+
         send_msg(self.sock, {
             "type": "connected",
             "msg": f"Velkommen, {username}!",
@@ -346,7 +411,6 @@ class ClientHandler(threading.Thread):
         send_msg(self.sock, {"type": "presence", "event": "list", "users": online_users})
         broadcast({"type": "presence", "event": "online", "username": username}, exclude=username)
         broadcast({"type": "system", "msg": f"{username} er gået online."}, exclude=username)
-
 
 
 
