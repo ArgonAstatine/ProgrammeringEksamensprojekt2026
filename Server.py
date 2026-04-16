@@ -16,18 +16,16 @@ log = logging.getLogger("Server")
 
 HOST = "0.0.0.0"
 PORT = 5555
-BUFFER_SIZE       = 4096
-PBKDF2_ITERATIONS = 260_000
+BUFFER_SIZE        = 4096
+PBKDF2_ITERATIONS  = 260_000
 MAX_MESSAGE_LENGTH = 2048
-MAX_FILE_SIZE      = 1 * 1024 * 1024  # 1 MB – ændr 1-tallet if so
+MAX_FILE_SIZE      = 1 * 1024 * 1024
 DB_ENC_PATH = "server.db.enc"
 KEY_PATH    = "server.key"
 
 clients:      dict = {}
 clients_lock = threading.Lock()
 db_lock      = threading.Lock()
-
-
 
 
 def load_or_create_key() -> bytes:
@@ -51,12 +49,14 @@ def load_db(fernet: Fernet) -> sqlite3.Connection:
         tmp.backup(conn)
         tmp.close()
         log.info("Database indlæst og dekrypteret fra %s", DB_ENC_PATH)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             username      TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            created       TEXT NOT NULL
+            created       TEXT NOT NULL,
+            last_seen     TEXT
         )
     """)
     conn.execute("""
@@ -75,9 +75,25 @@ def load_db(fernet: Fernet) -> sqlite3.Connection:
             recipient TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS friendships (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            requester  TEXT NOT NULL,
+            receiver   TEXT NOT NULL,
+            status     TEXT NOT NULL DEFAULT 'pending',
+            created    TEXT NOT NULL,
+            UNIQUE(requester, receiver)
+        )
+    """)
+
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
     if "recipient" not in existing_cols:
         conn.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
+
+    existing_user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "last_seen" not in existing_user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_seen TEXT")
+
     conn.commit()
     return conn
 
@@ -87,7 +103,6 @@ def save_db(fernet: Fernet, conn: sqlite3.Connection):
     encrypted = fernet.encrypt(dump.encode("utf-8"))
     with open(DB_ENC_PATH, "wb") as f:
         f.write(encrypted)
-
 
 
 def hash_password(password: str) -> str:
@@ -143,7 +158,6 @@ def broadcast(payload, exclude=None):
                 pass
 
 
-
 class ClientHandler(threading.Thread):
     def __init__(self, sock, addr, db, fernet):
         super().__init__(daemon=True)
@@ -172,8 +186,12 @@ class ClientHandler(threading.Thread):
         if self.username:
             with clients_lock:
                 clients.pop(self.username, None)
-            broadcast({"type": "presence", "event": "offline", "username": self.username})
-            broadcast({"type": "system", "msg": f"{self.username} har forladt chatten."})
+            now = datetime.now().isoformat()
+            with db_lock:
+                self.db.execute("UPDATE users SET last_seen = ? WHERE username = ?", (now, self.username))
+                self.db.commit()
+                save_db(self.fernet, self.db)
+            broadcast({"type": "presence", "event": "offline", "username": self.username, "last_seen": now})
             log.info("Bruger '%s' disconnectede.", self.username)
         else:
             log.info("Ukendt klient disconnectede: %s:%d", *self.addr)
@@ -181,7 +199,6 @@ class ClientHandler(threading.Thread):
             self.sock.close()
         except OSError:
             pass
-
 
     def db_write(self, sql, params=()):
         with db_lock:
@@ -193,13 +210,16 @@ class ClientHandler(threading.Thread):
         with db_lock:
             return self.db.execute(sql, params).fetchone()
 
+    def db_read_all(self, sql, params=()):
+        with db_lock:
+            return self.db.execute(sql, params).fetchall()
+
     def db_write_returning(self, sql, params=()):
         with db_lock:
             cur = self.db.execute(sql, params)
             self.db.commit()
             save_db(self.fernet, self.db)
             return cur.lastrowid
-
 
     def handle(self, msg):
         t = msg.get("type")
@@ -223,10 +243,7 @@ class ClientHandler(threading.Thread):
             if not content:
                 return True
             if len(content) > MAX_MESSAGE_LENGTH:
-                send_msg(self.sock, {
-                    "type": "error",
-                    "msg": f"Besked overskrider maks. {MAX_MESSAGE_LENGTH} tegn."
-                })
+                send_msg(self.sock, {"type": "error", "msg": f"Besked overskrider maks. {MAX_MESSAGE_LENGTH} tegn."})
                 return True
             recipient = msg.get("recipient")
             timestamp = datetime.now().strftime("%H:%M:%S")
@@ -241,26 +258,12 @@ class ClientHandler(threading.Thread):
                     send_msg(self.sock, {"type": "error", "msg": f"Bruger '{recipient}' er ikke online."})
                     return True
                 log.info("[%s] %s -> %s: %s", timestamp, self.username, recipient, content)
-                send_msg(target.sock, {
-                    "type": "message", "sender": self.username,
-                    "content": content, "timestamp": timestamp,
-                    "recipient": recipient, "msg_id": msg_id,
-                })
-                send_msg(self.sock, {
-                    "type": "message", "sender": self.username,
-                    "content": content, "timestamp": timestamp,
-                    "recipient": recipient, "msg_id": msg_id,
-                })
+                send_msg(target.sock, {"type": "message", "sender": self.username, "content": content, "timestamp": timestamp, "recipient": recipient, "msg_id": msg_id})
+                send_msg(self.sock,   {"type": "message", "sender": self.username, "content": content, "timestamp": timestamp, "recipient": recipient, "msg_id": msg_id})
             else:
                 log.info("[%s] %s: %s", timestamp, self.username, content)
-                broadcast({
-                    "type": "message", "sender": self.username,
-                    "content": content, "timestamp": timestamp, "msg_id": msg_id,
-                }, exclude=self.username)
-                send_msg(self.sock, {
-                    "type": "message", "sender": self.username,
-                    "content": content, "timestamp": timestamp, "msg_id": msg_id,
-                })
+                broadcast({"type": "message", "sender": self.username, "content": content, "timestamp": timestamp, "msg_id": msg_id}, exclude=self.username)
+                send_msg(self.sock, {"type": "message", "sender": self.username, "content": content, "timestamp": timestamp, "msg_id": msg_id})
 
         elif t == "file":
             if not self.username:
@@ -270,10 +273,7 @@ class ClientHandler(threading.Thread):
             data      = msg.get("data", "")
             raw_bytes = len(base64.b64decode(data, validate=False))
             if raw_bytes > MAX_FILE_SIZE:
-                send_msg(self.sock, {
-                    "type": "error",
-                    "msg": f"Fil overskrider maks. filstørrelse på {MAX_FILE_SIZE // 1024} KB."
-                })
+                send_msg(self.sock, {"type": "error", "msg": f"Fil overskrider maks. filstørrelse på {MAX_FILE_SIZE // 1024} KB."})
                 return True
             recipient = msg.get("recipient")
             timestamp = datetime.now().strftime("%H:%M:%S")
@@ -288,28 +288,12 @@ class ClientHandler(threading.Thread):
                     send_msg(self.sock, {"type": "error", "msg": f"Bruger '{recipient}' er ikke online."})
                     return True
                 log.info("[%s] %s -> %s sendte fil: %s", timestamp, self.username, recipient, filename)
-                send_msg(target.sock, {
-                    "type": "file", "sender": self.username, "filename": filename,
-                    "data": data, "timestamp": timestamp,
-                    "recipient": recipient, "msg_id": msg_id,
-                })
-                send_msg(self.sock, {
-                    "type": "file", "sender": self.username, "filename": filename,
-                    "data": data, "timestamp": timestamp,
-                    "recipient": recipient, "msg_id": msg_id,
-                })
+                send_msg(target.sock, {"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp, "recipient": recipient, "msg_id": msg_id})
+                send_msg(self.sock,   {"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp, "recipient": recipient, "msg_id": msg_id})
             else:
                 log.info("[%s] %s sendte fil: %s", timestamp, self.username, filename)
-                broadcast({
-                    "type": "file", "sender": self.username,
-                    "filename": filename, "data": data,
-                    "timestamp": timestamp, "msg_id": msg_id,
-                }, exclude=self.username)
-                send_msg(self.sock, {
-                    "type": "file", "sender": self.username, "filename": filename,
-                    "data": data, "timestamp": timestamp, "msg_id": msg_id,
-                })
-
+                broadcast({"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp, "msg_id": msg_id}, exclude=self.username)
+                send_msg(self.sock, {"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp, "msg_id": msg_id})
 
         elif t == "delete":
             if not self.username:
@@ -327,20 +311,133 @@ class ClientHandler(threading.Thread):
             if sender != self.username:
                 send_msg(self.sock, {"type": "error", "msg": "Du kan kun slette dine egne beskeder."})
                 return True
-
             self.db_write("DELETE FROM messages WHERE id = ?", (msg_id,))
             log.info("Bruger '%s' slettede besked id=%s", self.username, msg_id)
-
             if recipient:
                 with clients_lock:
                     target = clients.get(recipient)
                 send_msg(self.sock, {"type": "deleted", "msg_id": msg_id, "chat_key": recipient})
                 if target:
                     send_msg(target.sock, {"type": "deleted", "msg_id": msg_id, "chat_key": sender})
-
             else:
                 broadcast({"type": "deleted", "msg_id": msg_id, "chat_key": "#alle"}, exclude=self.username)
                 send_msg(self.sock, {"type": "deleted", "msg_id": msg_id, "chat_key": "#alle"})
+
+        elif t == "friend_request":
+            if not self.username:
+                return True
+            target_name = msg.get("username", "").strip()
+            if not target_name or target_name == self.username:
+                send_msg(self.sock, {"type": "error", "msg": "Ugyldigt brugernavn."})
+                return True
+            existing = self.db_read(
+                "SELECT status FROM friendships WHERE (requester=? AND receiver=?) OR (requester=? AND receiver=?)",
+                (self.username, target_name, target_name, self.username)
+            )
+            if existing:
+                send_msg(self.sock, {"type": "error", "msg": "Venneanmodning findes allerede eller I er allerede venner."})
+                return True
+            target_user = self.db_read("SELECT id FROM users WHERE username = ?", (target_name,))
+            if not target_user:
+                send_msg(self.sock, {"type": "error", "msg": f"Bruger '{target_name}' findes ikke."})
+                return True
+            now = datetime.now().isoformat()
+            self.db_write(
+                "INSERT INTO friendships (requester, receiver, status, created) VALUES (?, ?, 'pending', ?)",
+                (self.username, target_name, now)
+            )
+            log.info("'%s' sendte venneanmodning til '%s'", self.username, target_name)
+            send_msg(self.sock, {"type": "friend_request_sent", "to": target_name})
+            with clients_lock:
+                target_handler = clients.get(target_name)
+            if target_handler:
+                send_msg(target_handler.sock, {"type": "friend_request", "from": self.username})
+
+        elif t == "friend_response":
+            if not self.username:
+                return True
+            requester = msg.get("from", "").strip()
+            accepted  = msg.get("accepted", False)
+            row = self.db_read(
+                "SELECT id FROM friendships WHERE requester=? AND receiver=? AND status='pending'",
+                (requester, self.username)
+            )
+            if not row:
+                send_msg(self.sock, {"type": "error", "msg": "Ingen afventende venneanmodning fundet."})
+                return True
+            if accepted:
+                self.db_write(
+                    "UPDATE friendships SET status='accepted' WHERE requester=? AND receiver=?",
+                    (requester, self.username)
+                )
+                log.info("'%s' accepterede '%s's venneanmodning", self.username, requester)
+                send_msg(self.sock, {"type": "friend_accepted", "username": requester})
+                with clients_lock:
+                    req_handler = clients.get(requester)
+                if req_handler:
+                    send_msg(req_handler.sock, {"type": "friend_accepted", "username": self.username})
+            else:
+                self.db_write(
+                    "DELETE FROM friendships WHERE requester=? AND receiver=?",
+                    (requester, self.username)
+                )
+                log.info("'%s' afslog '%s's venneanmodning", self.username, requester)
+                send_msg(self.sock, {"type": "friend_declined", "username": requester})
+                with clients_lock:
+                    req_handler = clients.get(requester)
+                if req_handler:
+                    send_msg(req_handler.sock, {"type": "friend_declined", "username": self.username})
+
+        elif t == "unfriend":
+            if not self.username:
+                return True
+            other = msg.get("username", "").strip()
+            if not other:
+                return True
+            self.db_write(
+                "DELETE FROM friendships WHERE (requester=? AND receiver=?) OR (requester=? AND receiver=?)",
+                (self.username, other, other, self.username)
+            )
+            log.info("'%s' fjernede '%s' som ven", self.username, other)
+            send_msg(self.sock, {"type": "unfriended", "username": other})
+            with clients_lock:
+                other_handler = clients.get(other)
+            if other_handler:
+                send_msg(other_handler.sock, {"type": "unfriended", "username": self.username})
+
+        elif t == "get_user_hub":
+            if not self.username:
+                return True
+            all_users = self.db_read_all(
+                "SELECT username, created, last_seen FROM users WHERE username != ?",
+                (self.username,)
+            )
+            friendships = self.db_read_all(
+                "SELECT requester, receiver, status FROM friendships WHERE requester=? OR receiver=?",
+                (self.username, self.username)
+            )
+            with clients_lock:
+                online_now = set(clients.keys())
+            user_list = []
+            for username, created, last_seen in all_users:
+                fs_status = "none"
+                for req, rec, st in friendships:
+                    if req == username or rec == username:
+                        if st == "accepted":
+                            fs_status = "friends"
+                        elif st == "pending" and req == self.username:
+                            fs_status = "pending_sent"
+                        elif st == "pending" and rec == self.username:
+                            fs_status = "pending_received"
+                        break
+                user_list.append({
+                    "username":  username,
+                    "created":   created,
+                    "last_seen": last_seen,
+                    "online":    username in online_now,
+                    "friendship": fs_status,
+                })
+            send_msg(self.sock, {"type": "user_hub_data", "users": user_list})
 
         elif t == "disconnect":
             send_msg(self.sock, {"type": "disconnected", "msg": "Forbindelse lukket."})
@@ -353,7 +450,6 @@ class ClientHandler(threading.Thread):
             send_msg(self.sock, {"type": "error", "msg": f"Ukendt beskedtype: '{t}'"})
 
         return True
-
 
     def _login_or_register(self, username, password):
         row = self.db_read("SELECT password_hash FROM users WHERE username = ?", (username,))
@@ -384,17 +480,13 @@ class ClientHandler(threading.Thread):
         now   = datetime.now().isoformat()
         with db_lock:
             self.db.execute("DELETE FROM sessions WHERE username = ?", (username,))
-            self.db.execute(
-                "INSERT INTO sessions (token, username, created) VALUES (?, ?, ?)",
-                (token, username, now)
-            )
+            self.db.execute("INSERT INTO sessions (token, username, created) VALUES (?, ?, ?)", (token, username, now))
             self.db.commit()
             save_db(self.fernet, self.db)
         return token
 
     def _finalize_login(self, username, token):
         with clients_lock:
-            # Only block if this exact username is already connected
             if username in clients and clients[username] is not self:
                 send_msg(self.sock, {"type": "auth_error", "msg": "Brugeren er allerede logget ind."})
                 return
@@ -403,18 +495,30 @@ class ClientHandler(threading.Thread):
 
         log.info("Bruger '%s' logget ind.", username)
 
+        friends = self.db_read_all(
+            "SELECT requester, receiver FROM friendships WHERE (requester=? OR receiver=?) AND status='accepted'",
+            (username, username)
+        )
+        friend_names = [r if r != username else v for r, v in friends]
+
+        pending_in = self.db_read_all(
+            "SELECT requester FROM friendships WHERE receiver=? AND status='pending'",
+            (username,)
+        )
+        pending_requests = [row[0] for row in pending_in]
+
         with clients_lock:
-            online_users = [name for name in clients if name != username]
+            online_friends = [f for f in friend_names if f in clients]
 
         send_msg(self.sock, {
-            "type": "connected",
-            "msg": f"Velkommen, {username}!",
-            "token": token,
+            "type":             "connected",
+            "msg":              f"Velkommen, {username}!",
+            "token":            token,
+            "friends":          friend_names,
+            "pending_requests": pending_requests,
         })
-        send_msg(self.sock, {"type": "presence", "event": "list", "users": online_users})
+        send_msg(self.sock, {"type": "presence", "event": "list", "users": online_friends})
         broadcast({"type": "presence", "event": "online", "username": username}, exclude=username)
-        broadcast({"type": "system", "msg": f"{username} er gået online."}, exclude=username)
-
 
 
 def main():
