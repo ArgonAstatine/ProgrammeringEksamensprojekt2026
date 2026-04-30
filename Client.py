@@ -16,22 +16,99 @@ MAX_FILE_SIZE      = 1 * 1024 * 1024
 SESSION_PATH     = "session.json.enc"
 SESSION_KEY_PATH = "session.key"
 
-BG_DARK      = "#1e1f22"
-BG_PANEL     = "#2b2d31"
-BG_CHAT      = "#313338"
-BG_INPUT     = "#383a40"
-ACCENT       = "#5865f2"
-ACCENT_HOVER = "#4752c4"
-TEXT_MAIN    = "#dbdee1"
-TEXT_MUTED   = "#80848e"
-TEXT_TIME    = "#80848e"
-BUBBLE_ME    = "#5865f2"
-BUBBLE_OTHER = "#2e3035"
-BUBBLE_SYS   = "#80848e"
-ONLINE_DOT   = "#23a55a"
-SEPARATOR    = "#3f4147"
-DANGER       = "#f04747"
-WARNING      = "#faa61a"
+
+THEMES = {
+    "Discord Mørk": {
+        "BG_DARK":      "#1e1f22",
+        "BG_PANEL":     "#2b2d31",
+        "BG_CHAT":      "#313338",
+        "BG_INPUT":     "#383a40",
+        "ACCENT":       "#5865f2",
+        "ACCENT_HOVER": "#4752c4",
+        "TEXT_MAIN":    "#dbdee1",
+        "TEXT_MUTED":   "#80848e",
+        "TEXT_TIME":    "#80848e",
+        "BUBBLE_ME":    "#5865f2",
+        "BUBBLE_OTHER": "#2e3035",
+        "BUBBLE_SYS":   "#80848e",
+        "ONLINE_DOT":   "#23a55a",
+        "SEPARATOR":    "#3f4147",
+        "DANGER":       "#f04747",
+        "WARNING":      "#faa61a",
+    },
+    "Discord Lys": {
+        "BG_DARK":      "#e3e5e8",
+        "BG_PANEL":     "#f2f3f5",
+        "BG_CHAT":      "#ffffff",
+        "BG_INPUT":     "#ebedef",
+        "ACCENT":       "#5865f2",
+        "ACCENT_HOVER": "#4752c4",
+        "TEXT_MAIN":    "#2e3338",
+        "TEXT_MUTED":   "#747f8d",
+        "TEXT_TIME":    "#747f8d",
+        "BUBBLE_ME":    "#5865f2",
+        "BUBBLE_OTHER": "#e9eaec",
+        "BUBBLE_SYS":   "#747f8d",
+        "ONLINE_DOT":   "#23a55a",
+        "SEPARATOR":    "#c7c9ce",
+        "DANGER":       "#d83c3e",
+        "WARNING":      "#f0a232",
+    },
+    "Midnat Blå": {
+        "BG_DARK":      "#0a0f1e",
+        "BG_PANEL":     "#0d1529",
+        "BG_CHAT":      "#111d35",
+        "BG_INPUT":     "#162240",
+        "ACCENT":       "#4a9eff",
+        "ACCENT_HOVER": "#2e86e8",
+        "TEXT_MAIN":    "#cdd9f0",
+        "TEXT_MUTED":   "#6b82a8",
+        "TEXT_TIME":    "#6b82a8",
+        "BUBBLE_ME":    "#1a4b8c",
+        "BUBBLE_OTHER": "#172037",
+        "BUBBLE_SYS":   "#4a6080",
+        "ONLINE_DOT":   "#2ecc71",
+        "SEPARATOR":    "#1e2d4a",
+        "DANGER":       "#e74c3c",
+        "WARNING":      "#f39c12",
+    },
+    "Skov Grøn": {
+        "BG_DARK":      "#1a2416",
+        "BG_PANEL":     "#1f2e1a",
+        "BG_CHAT":      "#253320",
+        "BG_INPUT":     "#2b3d24",
+        "ACCENT":       "#4caf50",
+        "ACCENT_HOVER": "#388e3c",
+        "TEXT_MAIN":    "#d4e8c2",
+        "TEXT_MUTED":   "#7a9e68",
+        "TEXT_TIME":    "#7a9e68",
+        "BUBBLE_ME":    "#2e6e2e",
+        "BUBBLE_OTHER": "#1e3018",
+        "BUBBLE_SYS":   "#5a7a4a",
+        "ONLINE_DOT":   "#66bb6a",
+        "SEPARATOR":    "#2e4428",
+        "DANGER":       "#ef5350",
+        "WARNING":      "#ffa726",
+    },
+    "Varm Sepia": {
+        "BG_DARK":      "#1c1510",
+        "BG_PANEL":     "#251d15",
+        "BG_CHAT":      "#2e241a",
+        "BG_INPUT":     "#382c20",
+        "ACCENT":       "#c0874a",
+        "ACCENT_HOVER": "#a06a30",
+        "TEXT_MAIN":    "#e8d5b8",
+        "TEXT_MUTED":   "#9e8060",
+        "TEXT_TIME":    "#9e8060",
+        "BUBBLE_ME":    "#7a4820",
+        "BUBBLE_OTHER": "#261d14",
+        "BUBBLE_SYS":   "#7a6040",
+        "ONLINE_DOT":   "#81c784",
+        "SEPARATOR":    "#3a2c1e",
+        "DANGER":       "#e57373",
+        "WARNING":      "#ffb74d",
+    },
+}
 
 FONT_TITLE = ("Segoe UI", 11, "bold")
 FONT_BODY  = ("Segoe UI", 10)
@@ -85,52 +162,52 @@ class LoginWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Chat: Log ind")
-        self.configure(bg=BG_DARK)
+        self.configure(bg="#1e1f22")
         self.resizable(False, False)
         self._center(360, 370)
 
         session = load_session()
 
         tk.Label(self, text="Velkommen!", font=("Segoe UI", 18, "bold"),
-                 bg=BG_DARK, fg=TEXT_MAIN).pack(pady=(24, 4))
+                 bg="#1e1f22", fg="#dbdee1").pack(pady=(24, 4))
 
         tk.Label(self, text="SERVER IP", font=("Segoe UI", 8, "bold"),
-                 bg=BG_DARK, fg=TEXT_MUTED).pack(anchor="w", padx=50)
+                 bg="#1e1f22", fg="#80848e").pack(anchor="w", padx=50)
         self.ip_var = tk.StringVar(value=session.get("ip", "127.0.0.1"))
         tk.Entry(self, textvariable=self.ip_var, font=FONT_INPUT,
-                 bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
+                 bg="#383a40", fg="#dbdee1", insertbackground="#dbdee1",
                  relief="flat", bd=8).pack(padx=50, fill="x", pady=(2, 10))
 
         tk.Label(self, text="BRUGERNAVN", font=("Segoe UI", 8, "bold"),
-                 bg=BG_DARK, fg=TEXT_MUTED).pack(anchor="w", padx=50)
+                 bg="#1e1f22", fg="#80848e").pack(anchor="w", padx=50)
         self.username_var = tk.StringVar()
         name_entry = tk.Entry(self, textvariable=self.username_var, font=FONT_INPUT,
-                              bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
+                              bg="#383a40", fg="#dbdee1", insertbackground="#dbdee1",
                               relief="flat", bd=8)
         name_entry.pack(padx=50, fill="x", pady=(2, 10))
 
         tk.Label(self, text="ADGANGSKODE", font=("Segoe UI", 8, "bold"),
-                 bg=BG_DARK, fg=TEXT_MUTED).pack(anchor="w", padx=50)
+                 bg="#1e1f22", fg="#80848e").pack(anchor="w", padx=50)
         self.pw_var = tk.StringVar()
         pw_entry = tk.Entry(self, textvariable=self.pw_var, font=FONT_INPUT,
-                            bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
+                            bg="#383a40", fg="#dbdee1", insertbackground="#dbdee1",
                             relief="flat", bd=8, show="•")
         pw_entry.pack(padx=50, fill="x", pady=(2, 6))
         pw_entry.bind("<Return>", lambda _: self._login())
 
         name_entry.focus()
 
-        self.status = tk.Label(self, text="", font=FONT_SMALL, bg=BG_DARK, fg=DANGER)
+        self.status = tk.Label(self, text="", font=FONT_SMALL, bg="#1e1f22", fg="#f04747")
         self.status.pack()
 
         tk.Button(self, text="Log ind / Opret konto", font=("Segoe UI", 10, "bold"),
-                  bg=ACCENT, fg="white", relief="flat", bd=0,
-                  activebackground=ACCENT_HOVER, activeforeground="white",
+                  bg="#5865f2", fg="white", relief="flat", bd=0,
+                  activebackground="#4752c4", activeforeground="white",
                   padx=20, pady=8, cursor="hand2", command=self._login
                   ).pack(pady=8, padx=50, fill="x")
 
         tk.Label(self, text="Nyt brugernavn? Konto oprettes automatisk.",
-                 font=FONT_SMALL, bg=BG_DARK, fg=TEXT_MUTED).pack()
+                 font=FONT_SMALL, bg="#1e1f22", fg="#80848e").pack()
 
     def _center(self, w, h):
         self.update_idletasks()
@@ -180,8 +257,15 @@ class ChatApp(tk.Tk):
         self.pending_received = set()
         self.current_panel   = "chat"
 
+        session = load_session()
+        saved_theme = session.get("theme", "Discord Mørk")
+        if saved_theme not in THEMES:
+            saved_theme = "Discord Mørk"
+        self.current_theme_name = saved_theme
+        self._apply_theme_vars(THEMES[saved_theme])
+
         self.title("Chat")
-        self.configure(bg=BG_DARK)
+        self.configure(bg=self.BG_DARK)
         self.geometry("1100x680")
         self._center()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -196,6 +280,26 @@ class ChatApp(tk.Tk):
 
         self._tick()
 
+    def _apply_theme_vars(self, t: dict):
+        for k, v in t.items():
+            setattr(self, k, v)
+
+    def _apply_theme(self, theme_name: str):
+        if theme_name not in THEMES:
+            return
+        self.current_theme_name = theme_name
+        self._apply_theme_vars(THEMES[theme_name])
+
+        session = load_session()
+        session["theme"] = theme_name
+        save_session(session)
+
+        self.configure(bg=self.BG_DARK)
+        for widget in self.winfo_children():
+            widget.destroy()
+        self._build_ui()
+        self._refresh_chat()
+
     def _center(self):
         self.update_idletasks()
         x = (self.winfo_screenwidth() - 1100) // 2
@@ -203,55 +307,63 @@ class ChatApp(tk.Tk):
         self.geometry(f"1100x680+{x}+{y}")
 
     def _build_ui(self):
-        self.left = tk.Frame(self, bg=BG_PANEL, width=220)
+        self.left = tk.Frame(self, bg=self.BG_PANEL, width=220)
         self.left.pack(side="left", fill="y")
         self.left.pack_propagate(False)
 
-        top_bar = tk.Frame(self.left, bg=BG_DARK, height=48)
+        top_bar = tk.Frame(self.left, bg=self.BG_DARK, height=48)
         top_bar.pack(fill="x")
         top_bar.pack_propagate(False)
         tk.Label(top_bar, text=f"  {self.username}", font=FONT_TITLE,
-                 bg=BG_DARK, fg=TEXT_MAIN, anchor="w").pack(side="left", fill="y", padx=4)
+                 bg=self.BG_DARK, fg=self.TEXT_MAIN, anchor="w").pack(side="left", fill="y", padx=4)
+
+        theme_btn = tk.Button(
+            top_bar, text="🎨", font=("Segoe UI", 13),
+            bg=self.BG_DARK, fg=self.TEXT_MUTED, relief="flat", bd=0,
+            activebackground=self.BG_DARK, activeforeground=self.TEXT_MAIN,
+            cursor="hand2", command=self._open_theme_dialog
+        )
+        theme_btn.pack(side="right", padx=8)
 
         self.date_label = tk.Label(self.left, text="", font=FONT_SMALL,
-                                   bg=BG_PANEL, fg=TEXT_MUTED)
+                                   bg=self.BG_PANEL, fg=self.TEXT_MUTED)
         self.date_label.pack(pady=(8, 2))
 
-        tk.Frame(self.left, bg=SEPARATOR, height=1).pack(fill="x", padx=10, pady=4)
+        tk.Frame(self.left, bg=self.SEPARATOR, height=1).pack(fill="x", padx=10, pady=4)
 
-        nav_frame = tk.Frame(self.left, bg=BG_PANEL)
+        nav_frame = tk.Frame(self.left, bg=self.BG_PANEL)
         nav_frame.pack(fill="x", padx=8, pady=(0, 4))
 
         self.btn_chat = tk.Button(nav_frame, text="💬  Chat", font=("Segoe UI", 9, "bold"),
-                                  bg=ACCENT, fg="white", relief="flat", bd=0,
-                                  activebackground=ACCENT_HOVER, activeforeground="white",
+                                  bg=self.ACCENT, fg="white", relief="flat", bd=0,
+                                  activebackground=self.ACCENT_HOVER, activeforeground="white",
                                   anchor="w", padx=10, pady=5, cursor="hand2",
                                   command=self._show_chat_panel)
         self.btn_chat.pack(fill="x", pady=2)
 
         self.btn_hub = tk.Button(nav_frame, text="🌐  Bruger Hub", font=("Segoe UI", 9, "bold"),
-                                 bg=BG_PANEL, fg=TEXT_MUTED, relief="flat", bd=0,
-                                 activebackground="#35373c", activeforeground=TEXT_MAIN,
+                                 bg=self.BG_PANEL, fg=self.TEXT_MUTED, relief="flat", bd=0,
+                                 activebackground="#35373c", activeforeground=self.TEXT_MAIN,
                                  anchor="w", padx=10, pady=5, cursor="hand2",
                                  command=self._show_hub_panel)
         self.btn_hub.pack(fill="x", pady=2)
 
-        tk.Frame(self.left, bg=SEPARATOR, height=1).pack(fill="x", padx=10, pady=4)
+        tk.Frame(self.left, bg=self.SEPARATOR, height=1).pack(fill="x", padx=10, pady=4)
 
         tk.Label(self.left, text="  VENNELISTE", font=("Segoe UI", 8, "bold"),
-                 bg=BG_PANEL, fg=TEXT_MUTED, anchor="w").pack(fill="x", padx=8, pady=(0, 4))
+                 bg=self.BG_PANEL, fg=self.TEXT_MUTED, anchor="w").pack(fill="x", padx=8, pady=(0, 4))
 
-        list_frame = tk.Frame(self.left, bg=BG_PANEL)
+        list_frame = tk.Frame(self.left, bg=self.BG_PANEL)
         list_frame.pack(fill="both", expand=True, padx=4)
 
-        sb = tk.Scrollbar(list_frame, bg=BG_PANEL, troughcolor=BG_PANEL,
+        sb = tk.Scrollbar(list_frame, bg=self.BG_PANEL, troughcolor=self.BG_PANEL,
                           relief="flat", bd=0, width=6)
         sb.pack(side="right", fill="y")
 
         self.friend_list = tk.Listbox(
-            list_frame, bg=BG_PANEL, fg=TEXT_MAIN,
+            list_frame, bg=self.BG_PANEL, fg=self.TEXT_MAIN,
             font=FONT_BODY, relief="flat", bd=0,
-            selectbackground="#35373c", selectforeground=TEXT_MAIN,
+            selectbackground="#35373c", selectforeground=self.TEXT_MAIN,
             activestyle="none", yscrollcommand=sb.set,
             highlightthickness=0
         )
@@ -260,46 +372,105 @@ class ChatApp(tk.Tk):
         self.friend_list.bind("<<ListboxSelect>>", self._on_friend_select)
         self.friend_list.bind("<Button-3>", self._on_friend_right_click)
 
-        broadcast_row = tk.Frame(self.left, bg=BG_PANEL, cursor="hand2")
+        for name in sorted(self.friends):
+            display = f" {name}"
+            self.friend_list.insert("end", display)
+            idx = self.friend_list.size() - 1
+            online = self.user_status.get(name, False)
+            self.friend_list.itemconfig(idx, fg=self.ONLINE_DOT if online else self.DANGER)
+
+        broadcast_row = tk.Frame(self.left, bg=self.BG_PANEL, cursor="hand2")
         broadcast_row.pack(fill="x", padx=8, pady=(0, 8))
         broadcast_label = tk.Label(broadcast_row, text="  # alle", font=FONT_BODY,
-                                   bg=BG_PANEL, fg=TEXT_MUTED, anchor="w", pady=5)
+                                   bg=self.BG_PANEL, fg=self.TEXT_MUTED, anchor="w", pady=5)
         broadcast_label.pack(fill="x")
         broadcast_row.bind("<Button-1>", lambda _: self._select_broadcast())
         broadcast_label.bind("<Button-1>", lambda _: self._select_broadcast())
 
-        self.right = tk.Frame(self, bg=BG_CHAT)
+        self.right = tk.Frame(self, bg=self.BG_CHAT)
         self.right.pack(side="right", fill="both", expand=True)
 
         self._build_chat_panel()
         self._build_hub_panel()
 
-        self._show_chat_panel()
+        if self.current_panel == "hub":
+            self._show_hub_panel()
+        else:
+            self._show_chat_panel()
+
+    def _open_theme_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Vælg tema")
+        dialog.configure(bg=self.BG_DARK)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        self.update_idletasks()
+        w, h = 300, 60 + len(THEMES) * 44
+        x = self.winfo_x() + (1100 - w) // 2
+        y = self.winfo_y() + (680 - h) // 2
+        dialog.geometry(f"{w}x{h}+{x}+{y}")
+
+        tk.Label(dialog, text="Vælg app-tema", font=FONT_TITLE,
+                 bg=self.BG_DARK, fg=self.TEXT_MAIN).pack(pady=(16, 8))
+
+        for name, colors in THEMES.items():
+            is_active = (name == self.current_theme_name)
+            row = tk.Frame(dialog, bg=self.BG_PANEL if is_active else self.BG_DARK,
+                           cursor="hand2")
+            row.pack(fill="x", padx=16, pady=3)
+            preview = tk.Frame(row, bg=colors["ACCENT"], width=16, height=16)
+            preview.pack(side="left", padx=(10, 8), pady=10)
+            preview.pack_propagate(False)
+
+            label_text = f"✓  {name}" if is_active else f"    {name}"
+            lbl = tk.Label(row, text=label_text, font=FONT_BODY,
+                           bg=self.BG_PANEL if is_active else self.BG_DARK,
+                           fg=self.ACCENT if is_active else self.TEXT_MAIN,
+                           anchor="w", pady=6)
+            lbl.pack(side="left", fill="x", expand=True)
+
+            def make_cmd(n=name, d=dialog):
+                def cmd(_=None):
+                    d.destroy()
+                    self._apply_theme(n)
+                return cmd
+
+            row.bind("<Button-1>", make_cmd())
+            lbl.bind("<Button-1>", make_cmd())
+            preview.bind("<Button-1>", make_cmd())
+
+            row.bind("<Enter>", lambda e, r=row, n=name: r.config(
+                bg=self.BG_PANEL if n != self.current_theme_name else r.cget("bg")))
+            row.bind("<Leave>", lambda e, r=row, n=name: r.config(
+                bg=self.BG_PANEL if n == self.current_theme_name else self.BG_DARK))
 
     def _build_chat_panel(self):
-        self.chat_panel = tk.Frame(self.right, bg=BG_CHAT)
+        self.chat_panel = tk.Frame(self.right, bg=self.BG_CHAT)
 
-        self.chat_header = tk.Frame(self.chat_panel, bg=BG_CHAT, height=48)
+        self.chat_header = tk.Frame(self.chat_panel, bg=self.BG_CHAT, height=48)
         self.chat_header.pack(fill="x")
         self.chat_header.pack_propagate(False)
-        tk.Frame(self.chat_panel, bg=SEPARATOR, height=1).pack(fill="x")
-        self.header_label = tk.Label(self.chat_header, text="# alle",
-                                     font=FONT_TITLE, bg=BG_CHAT, fg=TEXT_MAIN,
+        tk.Frame(self.chat_panel, bg=self.SEPARATOR, height=1).pack(fill="x")
+        chat_key = self._chat_key()
+        header_text = f"@ {self.active_chat}" if self.active_chat else "# alle"
+        self.header_label = tk.Label(self.chat_header, text=header_text,
+                                     font=FONT_TITLE, bg=self.BG_CHAT, fg=self.TEXT_MAIN,
                                      anchor="w", padx=16)
         self.header_label.pack(fill="both", expand=True)
 
-        msg_frame = tk.Frame(self.chat_panel, bg=BG_CHAT)
+        msg_frame = tk.Frame(self.chat_panel, bg=self.BG_CHAT)
         msg_frame.pack(fill="both", expand=True)
 
-        self.canvas = tk.Canvas(msg_frame, bg=BG_CHAT, highlightthickness=0, bd=0)
+        self.canvas = tk.Canvas(msg_frame, bg=self.BG_CHAT, highlightthickness=0, bd=0)
         self.canvas.pack(side="left", fill="both", expand=True)
 
         vscroll = tk.Scrollbar(msg_frame, orient="vertical", command=self.canvas.yview,
-                               bg=BG_CHAT, troughcolor=BG_CHAT, relief="flat", bd=0, width=8)
+                               bg=self.BG_CHAT, troughcolor=self.BG_CHAT, relief="flat", bd=0, width=8)
         vscroll.pack(side="right", fill="y")
         self.canvas.configure(yscrollcommand=vscroll.set)
 
-        self.msg_inner = tk.Frame(self.canvas, bg=BG_CHAT)
+        self.msg_inner = tk.Frame(self.canvas, bg=self.BG_CHAT)
         self.canvas_win = self.canvas.create_window((0, 0), window=self.msg_inner, anchor="nw")
         self.msg_inner.bind("<Configure>", lambda _: self.canvas.configure(
             scrollregion=self.canvas.bbox("all")))
@@ -308,59 +479,59 @@ class ChatApp(tk.Tk):
         self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(
             int(-1 * (e.delta / 120)), "units"))
 
-        tk.Frame(self.chat_panel, bg=SEPARATOR, height=1).pack(fill="x")
-        bottom = tk.Frame(self.chat_panel, bg=BG_CHAT, pady=12)
+        tk.Frame(self.chat_panel, bg=self.SEPARATOR, height=1).pack(fill="x")
+        bottom = tk.Frame(self.chat_panel, bg=self.BG_CHAT, pady=12)
         bottom.pack(fill="x", side="bottom")
 
-        input_wrap = tk.Frame(bottom, bg=BG_INPUT, padx=4, pady=4)
+        input_wrap = tk.Frame(bottom, bg=self.BG_INPUT, padx=4, pady=4)
         input_wrap.pack(fill="x", padx=16)
 
         tk.Button(input_wrap, text="+", font=("Segoe UI", 13, "bold"),
-                  bg=BG_INPUT, fg=TEXT_MUTED, relief="flat", bd=0,
-                  activebackground=BG_INPUT, activeforeground=TEXT_MAIN,
+                  bg=self.BG_INPUT, fg=self.TEXT_MUTED, relief="flat", bd=0,
+                  activebackground=self.BG_INPUT, activeforeground=self.TEXT_MAIN,
                   cursor="hand2", command=self._attach_file, padx=6).pack(side="left")
 
         self.input_var = tk.StringVar()
         self.input_field = tk.Entry(input_wrap, textvariable=self.input_var,
-                                    font=FONT_INPUT, bg=BG_INPUT, fg=TEXT_MAIN,
-                                    insertbackground=TEXT_MAIN, relief="flat", bd=4,
+                                    font=FONT_INPUT, bg=self.BG_INPUT, fg=self.TEXT_MAIN,
+                                    insertbackground=self.TEXT_MAIN, relief="flat", bd=4,
                                     highlightthickness=0)
         self.input_field.pack(side="left", fill="x", expand=True)
         self.input_field.bind("<Return>", lambda _: self._send())
 
         tk.Button(input_wrap, text="Send", font=("Segoe UI", 9, "bold"),
-                  bg=ACCENT, fg="white", relief="flat", bd=0,
-                  activebackground=ACCENT_HOVER, activeforeground="white",
+                  bg=self.ACCENT, fg="white", relief="flat", bd=0,
+                  activebackground=self.ACCENT_HOVER, activeforeground="white",
                   padx=12, pady=2, cursor="hand2", command=self._send).pack(side="right", padx=4)
 
     def _build_hub_panel(self):
-        self.hub_panel = tk.Frame(self.right, bg=BG_CHAT)
+        self.hub_panel = tk.Frame(self.right, bg=self.BG_CHAT)
 
-        header = tk.Frame(self.hub_panel, bg=BG_CHAT, height=48)
+        header = tk.Frame(self.hub_panel, bg=self.BG_CHAT, height=48)
         header.pack(fill="x")
         header.pack_propagate(False)
         tk.Label(header, text="🌐  Bruger Hub", font=FONT_TITLE,
-                 bg=BG_CHAT, fg=TEXT_MAIN, anchor="w", padx=16).pack(fill="both", expand=True)
-        tk.Frame(self.hub_panel, bg=SEPARATOR, height=1).pack(fill="x")
+                 bg=self.BG_CHAT, fg=self.TEXT_MAIN, anchor="w", padx=16).pack(fill="both", expand=True)
+        tk.Frame(self.hub_panel, bg=self.SEPARATOR, height=1).pack(fill="x")
 
         self.hub_notice = tk.Label(self.hub_panel, text="", font=FONT_SMALL,
-                                   bg=BG_CHAT, fg=WARNING)
+                                   bg=self.BG_CHAT, fg=self.WARNING)
         self.hub_notice.pack(pady=(6, 0))
 
-        hub_scroll_frame = tk.Frame(self.hub_panel, bg=BG_CHAT)
+        hub_scroll_frame = tk.Frame(self.hub_panel, bg=self.BG_CHAT)
         hub_scroll_frame.pack(fill="both", expand=True, padx=16, pady=12)
 
-        hub_sb = tk.Scrollbar(hub_scroll_frame, bg=BG_CHAT, troughcolor=BG_CHAT,
+        hub_sb = tk.Scrollbar(hub_scroll_frame, bg=self.BG_CHAT, troughcolor=self.BG_CHAT,
                               relief="flat", bd=0, width=8)
         hub_sb.pack(side="right", fill="y")
 
-        self.hub_canvas = tk.Canvas(hub_scroll_frame, bg=BG_CHAT,
+        self.hub_canvas = tk.Canvas(hub_scroll_frame, bg=self.BG_CHAT,
                                     highlightthickness=0, bd=0,
                                     yscrollcommand=hub_sb.set)
         self.hub_canvas.pack(side="left", fill="both", expand=True)
         hub_sb.config(command=self.hub_canvas.yview)
 
-        self.hub_inner = tk.Frame(self.hub_canvas, bg=BG_CHAT)
+        self.hub_inner = tk.Frame(self.hub_canvas, bg=self.BG_CHAT)
         self.hub_win = self.hub_canvas.create_window((0, 0), window=self.hub_inner, anchor="nw")
         self.hub_inner.bind("<Configure>", lambda _: self.hub_canvas.configure(
             scrollregion=self.hub_canvas.bbox("all")))
@@ -371,15 +542,15 @@ class ChatApp(tk.Tk):
         self.current_panel = "chat"
         self.hub_panel.pack_forget()
         self.chat_panel.pack(fill="both", expand=True)
-        self.btn_chat.config(bg=ACCENT, fg="white")
-        self.btn_hub.config(bg=BG_PANEL, fg=TEXT_MUTED)
+        self.btn_chat.config(bg=self.ACCENT, fg="white")
+        self.btn_hub.config(bg=self.BG_PANEL, fg=self.TEXT_MUTED)
 
     def _show_hub_panel(self):
         self.current_panel = "hub"
         self.chat_panel.pack_forget()
         self.hub_panel.pack(fill="both", expand=True)
-        self.btn_hub.config(bg=ACCENT, fg="white")
-        self.btn_chat.config(bg=BG_PANEL, fg=TEXT_MUTED)
+        self.btn_hub.config(bg=self.ACCENT, fg="white")
+        self.btn_chat.config(bg=self.BG_PANEL, fg=self.TEXT_MUTED)
         send_msg(self.sock, {"type": "get_user_hub"})
 
     def _populate_hub(self, users):
@@ -388,14 +559,14 @@ class ChatApp(tk.Tk):
 
         if not users:
             tk.Label(self.hub_inner, text="Ingen andre brugere registreret endnu.",
-                     font=FONT_BODY, bg=BG_CHAT, fg=TEXT_MUTED).pack(pady=20)
+                     font=FONT_BODY, bg=self.BG_CHAT, fg=self.TEXT_MUTED).pack(pady=20)
             return
 
-        header_row = tk.Frame(self.hub_inner, bg=BG_PANEL)
+        header_row = tk.Frame(self.hub_inner, bg=self.BG_PANEL)
         header_row.pack(fill="x", pady=(0, 4))
         for text, w in [("Bruger", 180), ("Status", 80), ("Sidst set", 160), ("Venner", 120)]:
             tk.Label(header_row, text=text, font=("Segoe UI", 9, "bold"),
-                     bg=BG_PANEL, fg=TEXT_MUTED, width=w // 8, anchor="w",
+                     bg=self.BG_PANEL, fg=self.TEXT_MUTED, width=w // 8, anchor="w",
                      padx=8, pady=6).pack(side="left")
 
         for u in users:
@@ -404,68 +575,66 @@ class ChatApp(tk.Tk):
             last_seen  = format_last_seen(u.get("last_seen"))
             friendship = u.get("friendship", "none")
 
-            row = tk.Frame(self.hub_inner, bg=BG_PANEL, pady=0)
+            row = tk.Frame(self.hub_inner, bg=self.BG_PANEL, pady=0)
             row.pack(fill="x", pady=2)
 
-            dot_color = ONLINE_DOT if online else DANGER
+            dot_color   = self.ONLINE_DOT if online else self.DANGER
             status_text = "Online" if online else "Offline"
 
             tk.Label(row, text=f"● {name}", font=FONT_NAME,
-                     bg=BG_PANEL, fg=TEXT_MAIN, anchor="w",
+                     bg=self.BG_PANEL, fg=self.TEXT_MAIN, anchor="w",
                      padx=8, pady=8, width=20).pack(side="left")
 
             tk.Label(row, text=status_text, font=FONT_SMALL,
-                     bg=BG_PANEL, fg=dot_color, anchor="w",
+                     bg=self.BG_PANEL, fg=dot_color, anchor="w",
                      padx=8, width=10).pack(side="left")
 
             tk.Label(row, text=last_seen, font=FONT_SMALL,
-                     bg=BG_PANEL, fg=TEXT_MUTED, anchor="w",
+                     bg=self.BG_PANEL, fg=self.TEXT_MUTED, anchor="w",
                      padx=8, width=20).pack(side="left")
 
-            action_frame = tk.Frame(row, bg=BG_PANEL)
+            action_frame = tk.Frame(row, bg=self.BG_PANEL)
             action_frame.pack(side="left", padx=8)
 
             if friendship == "friends":
                 tk.Label(action_frame, text="✓ Venner", font=FONT_SMALL,
-                         bg=BG_PANEL, fg=ONLINE_DOT).pack(side="left", padx=(0, 6))
-                unfriend_btn = tk.Button(action_frame, text="Fjern ven",
-                                         font=FONT_SMALL, bg=DANGER, fg="white",
-                                         relief="flat", bd=0, cursor="hand2",
-                                         activebackground="#c0392b", activeforeground="white",
-                                         padx=8, pady=3,
-                                         command=lambda n=name: self._unfriend(n))
-                unfriend_btn.pack(side="left")
+                         bg=self.BG_PANEL, fg=self.ONLINE_DOT).pack(side="left", padx=(0, 6))
+                tk.Button(action_frame, text="Fjern ven",
+                          font=FONT_SMALL, bg=self.DANGER, fg="white",
+                          relief="flat", bd=0, cursor="hand2",
+                          activebackground="#c0392b", activeforeground="white",
+                          padx=8, pady=3,
+                          command=lambda n=name: self._unfriend(n)).pack(side="left")
 
             elif friendship == "pending_sent":
                 tk.Label(action_frame, text="⏳ Afventer svar", font=FONT_SMALL,
-                         bg=BG_PANEL, fg=WARNING).pack(side="left")
+                         bg=self.BG_PANEL, fg=self.WARNING).pack(side="left")
 
             elif friendship == "pending_received":
                 tk.Label(action_frame, text="Anmodning fra dem:", font=FONT_SMALL,
-                         bg=BG_PANEL, fg=TEXT_MUTED).pack(side="left", padx=(0, 6))
+                         bg=self.BG_PANEL, fg=self.TEXT_MUTED).pack(side="left", padx=(0, 6))
                 tk.Button(action_frame, text="✓ Accepter",
-                           font=FONT_SMALL, bg=ONLINE_DOT, fg="white",
-                           relief="flat", bd=0, cursor="hand2",
-                           activebackground="#1a8c47", activeforeground="white",
-                           padx=8, pady=3,
-                           command=lambda n=name: self._respond_request(n, True)
-                           ).pack(side="left", padx=(0, 4))
+                          font=FONT_SMALL, bg=self.ONLINE_DOT, fg="white",
+                          relief="flat", bd=0, cursor="hand2",
+                          activebackground="#1a8c47", activeforeground="white",
+                          padx=8, pady=3,
+                          command=lambda n=name: self._respond_request(n, True)
+                          ).pack(side="left", padx=(0, 4))
                 tk.Button(action_frame, text="✗ Afvis",
-                           font=FONT_SMALL, bg=DANGER, fg="white",
-                           relief="flat", bd=0, cursor="hand2",
-                           activebackground="#c0392b", activeforeground="white",
-                           padx=8, pady=3,
-                           command=lambda n=name: self._respond_request(n, False)
-                           ).pack(side="left")
-
+                          font=FONT_SMALL, bg=self.DANGER, fg="white",
+                          relief="flat", bd=0, cursor="hand2",
+                          activebackground="#c0392b", activeforeground="white",
+                          padx=8, pady=3,
+                          command=lambda n=name: self._respond_request(n, False)
+                          ).pack(side="left")
             else:
                 tk.Button(action_frame, text="+ Tilføj ven",
-                           font=FONT_SMALL, bg=ACCENT, fg="white",
-                           relief="flat", bd=0, cursor="hand2",
-                           activebackground=ACCENT_HOVER, activeforeground="white",
-                           padx=8, pady=3,
-                           command=lambda n=name: self._send_friend_request(n)
-                           ).pack(side="left")
+                          font=FONT_SMALL, bg=self.ACCENT, fg="white",
+                          relief="flat", bd=0, cursor="hand2",
+                          activebackground=self.ACCENT_HOVER, activeforeground="white",
+                          padx=8, pady=3,
+                          command=lambda n=name: self._send_friend_request(n)
+                          ).pack(side="left")
 
     def _send_friend_request(self, username):
         send_msg(self.sock, {"type": "friend_request", "username": username})
@@ -518,8 +687,8 @@ class ChatApp(tk.Tk):
         if idx < 0:
             return
         name = self.friend_list.get(idx).lstrip("● ").strip()
-        menu = tk.Menu(self, tearoff=0, bg=BG_PANEL, fg=TEXT_MAIN,
-                       activebackground=ACCENT, activeforeground="white",
+        menu = tk.Menu(self, tearoff=0, bg=self.BG_PANEL, fg=self.TEXT_MAIN,
+                       activebackground=self.ACCENT, activeforeground="white",
                        relief="flat", bd=0)
         menu.add_command(label=f"Fjern {name} som ven",
                          command=lambda: self._unfriend(name))
@@ -576,37 +745,37 @@ class ChatApp(tk.Tk):
     def _render_bubble(self, content, sender, timestamp, is_file=False,
                        is_system=False, filename=None, file_data=None,
                        msg_index=None, chat_key=None):
-        outer = tk.Frame(self.msg_inner, bg=BG_CHAT)
+        outer = tk.Frame(self.msg_inner, bg=self.BG_CHAT)
         outer.pack(fill="x", padx=16, pady=2)
 
         if is_system:
             tk.Label(outer, text=content, font=FONT_SMALL,
-                     bg=BG_CHAT, fg=BUBBLE_SYS).pack(pady=2)
+                     bg=self.BG_CHAT, fg=self.BUBBLE_SYS).pack(pady=2)
             self._scroll_bottom()
             return outer
 
         is_me = (sender == self.username)
-        bg    = BUBBLE_ME if is_me else BUBBLE_OTHER
-        fg    = "#ffffff" if is_me else TEXT_MAIN
+        bg    = self.BUBBLE_ME if is_me else self.BUBBLE_OTHER
+        fg    = "#ffffff" if is_me else self.TEXT_MAIN
         align = "e" if is_me else "w"
 
-        meta = tk.Frame(outer, bg=BG_CHAT)
+        meta = tk.Frame(outer, bg=self.BG_CHAT)
         meta.pack(anchor=align)
         if not is_me:
             tk.Label(meta, text=sender, font=FONT_NAME,
-                     bg=BG_CHAT, fg=ACCENT).pack(side="left", padx=(0, 6))
+                     bg=self.BG_CHAT, fg=self.ACCENT).pack(side="left", padx=(0, 6))
         tk.Label(meta, text=timestamp, font=FONT_SMALL,
-                 bg=BG_CHAT, fg=TEXT_TIME).pack(side="left")
+                 bg=self.BG_CHAT, fg=self.TEXT_TIME).pack(side="left")
 
         if is_me and msg_index is not None and chat_key is not None:
-            del_btn = tk.Label(meta, text="🗑", font=FONT_SMALL, #jeg har fundet den perfekte emjoi!
-                               bg=BG_CHAT, fg=TEXT_MUTED, cursor="hand2")
+            del_btn = tk.Label(meta, text="🗑", font=FONT_SMALL,
+                               bg=self.BG_CHAT, fg=self.TEXT_MUTED, cursor="hand2")
             del_btn.pack(side="left", padx=(6, 0))
             del_btn.bind("<Button-1>", lambda _, i=msg_index, k=chat_key: self._delete_message(i, k))
-            del_btn.bind("<Enter>", lambda e: e.widget.config(fg=DANGER))
-            del_btn.bind("<Leave>", lambda e: e.widget.config(fg=TEXT_MUTED))
+            del_btn.bind("<Enter>", lambda e: e.widget.config(fg=self.DANGER))
+            del_btn.bind("<Leave>", lambda e: e.widget.config(fg=self.TEXT_MUTED))
 
-        bubble = tk.Frame(outer, bg=BG_CHAT)
+        bubble = tk.Frame(outer, bg=self.BG_CHAT)
         bubble.pack(anchor=align)
 
         if is_file:
@@ -616,8 +785,8 @@ class ChatApp(tk.Tk):
                      wraplength=360, justify="left", padx=12, pady=7,
                      relief="flat").pack(side="left", fill="x", expand=True)
             tk.Button(row, text="Download", font=FONT_BODY,
-                      bg=ACCENT, fg="white", relief="flat", bd=0,
-                      activebackground=ACCENT_HOVER, activeforeground="white",
+                      bg=self.ACCENT, fg="white", relief="flat", bd=0,
+                      activebackground=self.ACCENT_HOVER, activeforeground="white",
                       cursor="hand2",
                       command=lambda: self._download_file(filename, file_data)
                       ).pack(side="right", padx=8, pady=7)
@@ -697,7 +866,7 @@ class ChatApp(tk.Tk):
         if display not in existing:
             self.friend_list.insert("end", display)
             idx = self.friend_list.size() - 1
-            self.friend_list.itemconfig(idx, fg=DANGER)
+            self.friend_list.itemconfig(idx, fg=self.DANGER)
             self.user_status[name] = False
 
     def _set_friend_status(self, name, online: bool):
@@ -708,7 +877,7 @@ class ChatApp(tk.Tk):
         if display not in existing:
             return
         idx   = existing.index(display)
-        color = ONLINE_DOT if online else DANGER
+        color = self.ONLINE_DOT if online else self.DANGER
         self.friend_list.itemconfig(idx, fg=color)
         self.user_status[name] = online
 
@@ -722,7 +891,7 @@ class ChatApp(tk.Tk):
             self.friend_list.insert("end", display)
             idx = self.friend_list.size() - 1
             online = self.user_status.get(name, False)
-            self.friend_list.itemconfig(idx, fg=ONLINE_DOT if online else DANGER)
+            self.friend_list.itemconfig(idx, fg=self.ONLINE_DOT if online else self.DANGER)
 
     def _remove_friend_from_sidebar(self, name):
         self.friends.discard(name)
@@ -734,7 +903,7 @@ class ChatApp(tk.Tk):
             self.friend_list.delete(existing.index(display))
 
     def _show_hub_notice(self, text, color=None):
-        self.hub_notice.config(text=text, fg=color or WARNING)
+        self.hub_notice.config(text=text, fg=color or self.WARNING)
         self.after(4000, lambda: self.hub_notice.config(text=""))
 
     def _start_listener(self):
@@ -768,7 +937,9 @@ class ChatApp(tk.Tk):
         if t == "connected":
             token = msg.get("token", "")
             if token:
-                save_session({"username": self.username, "ip": self.ip, "token": token})
+                session = load_session()
+                session.update({"username": self.username, "ip": self.ip, "token": token})
+                save_session(session)
             for name in msg.get("friends", []):
                 self.friends.add(name)
                 self.chat_history.setdefault(name, [])
@@ -854,7 +1025,7 @@ class ChatApp(tk.Tk):
         elif t == "friend_request_sent":
             to = msg.get("to", "?")
             self.pending_sent.add(to)
-            self._show_hub_notice(f"Venneanmodning sendt til {to}!", ONLINE_DOT)
+            self._show_hub_notice(f"Venneanmodning sendt til {to}!", self.ONLINE_DOT)
             if self.current_panel == "hub":
                 send_msg(self.sock, {"type": "get_user_hub"})
 
@@ -878,7 +1049,7 @@ class ChatApp(tk.Tk):
             other = msg.get("username", "?")
             self.pending_sent.discard(other)
             self.pending_received.discard(other)
-            self._show_hub_notice(f"{other} afslog venneanmodningen.", DANGER)
+            self._show_hub_notice(f"{other} afslog venneanmodningen.", self.DANGER)
             if self.current_panel == "hub":
                 send_msg(self.sock, {"type": "get_user_hub"})
 
@@ -902,7 +1073,7 @@ class ChatApp(tk.Tk):
             self._add_bubble(f"Fejl: {msg.get('msg','')}", sender="system",
                              timestamp="", is_system=True)
             if self.current_panel == "hub":
-                self._show_hub_notice(msg.get("msg", ""), DANGER)
+                self._show_hub_notice(msg.get("msg", ""), self.DANGER)
 
         elif t == "disconnected":
             self.after(200, self._on_close)
