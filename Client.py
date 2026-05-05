@@ -16,6 +16,9 @@ MAX_FILE_SIZE      = 1 * 1024 * 1024
 SESSION_PATH     = "session.json.enc"
 SESSION_KEY_PATH = "session.key"
 
+IMAGE_EXTENSIONS     = {".png", ".gif"}
+IMAGE_MAX_WIDTH_DISPLAY  = 380
+IMAGE_MAX_HEIGHT_DISPLAY = 280
 
 THEMES = {
     "Discord Mørk": {
@@ -158,6 +161,18 @@ def format_last_seen(iso_str):
         return iso_str
 
 
+def is_image_filename(filename: str) -> bool:
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in IMAGE_EXTENSIONS
+
+
+def make_photo(data_b64: str) -> "tk.PhotoImage | None":
+    try:
+        return tk.PhotoImage(data=data_b64)
+    except tk.TclError:
+        return None
+
+
 class LoginWindow(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -256,6 +271,7 @@ class ChatApp(tk.Tk):
         self.pending_sent    = set()
         self.pending_received = set()
         self.current_panel   = "chat"
+        self._photo_refs: list = []
 
         session = load_session()
         saved_theme = session.get("theme", "Discord Mørk")
@@ -452,7 +468,6 @@ class ChatApp(tk.Tk):
         self.chat_header.pack(fill="x")
         self.chat_header.pack_propagate(False)
         tk.Frame(self.chat_panel, bg=self.SEPARATOR, height=1).pack(fill="x")
-        chat_key = self._chat_key()
         header_text = f"@ {self.active_chat}" if self.active_chat else "# alle"
         self.header_label = tk.Label(self.chat_header, text=header_text,
                                      font=FONT_TITLE, bg=self.BG_CHAT, fg=self.TEXT_MAIN,
@@ -658,6 +673,7 @@ class ChatApp(tk.Tk):
         self.bubble_frames.setdefault(chat_key, []).append(None)
 
     def _refresh_chat(self):
+        self._photo_refs.clear()
         for child in self.msg_inner.winfo_children():
             child.destroy()
         key = self._chat_key()
@@ -667,6 +683,7 @@ class ChatApp(tk.Tk):
                 msg["content"], sender=msg["sender"], timestamp=msg["timestamp"],
                 is_file=msg["is_file"], filename=msg.get("filename"),
                 file_data=msg.get("file_data"), is_system=msg.get("is_system", False),
+                is_image=msg.get("is_image", False),
                 msg_index=i, chat_key=key
             )
             self.bubble_frames[key].append(frame)
@@ -702,7 +719,10 @@ class ChatApp(tk.Tk):
         self._refresh_chat()
 
     def _attach_file(self):
-        path = filedialog.askopenfilename(title="Vælg fil")
+        path = filedialog.askopenfilename(
+            title="Vælg fil",
+            filetypes=[("Billeder", "*.png *.gif"), ("Alle filer", "*.*")]
+        )
         if not path:
             return
         fname = os.path.basename(path)
@@ -718,8 +738,9 @@ class ChatApp(tk.Tk):
                 f"Filen er for stor; maks. filstørrelse er {MAX_FILE_SIZE // 1024} KB.",
                 sender="system", timestamp="", is_system=True)
             return
-        encoded = base64.b64encode(raw).decode("utf-8")
-        payload = {"type": "file", "filename": fname, "data": encoded}
+        encoded  = base64.b64encode(raw).decode("utf-8")
+        is_image = is_image_filename(fname)
+        payload  = {"type": "file", "filename": fname, "data": encoded, "is_image": is_image}
         if self.active_chat is not None:
             payload["recipient"] = self.active_chat
         send_msg(self.sock, payload)
@@ -744,7 +765,7 @@ class ChatApp(tk.Tk):
 
     def _render_bubble(self, content, sender, timestamp, is_file=False,
                        is_system=False, filename=None, file_data=None,
-                       msg_index=None, chat_key=None):
+                       is_image=False, msg_index=None, chat_key=None):
         outer = tk.Frame(self.msg_inner, bg=self.BG_CHAT)
         outer.pack(fill="x", padx=16, pady=2)
 
@@ -778,18 +799,22 @@ class ChatApp(tk.Tk):
         bubble = tk.Frame(outer, bg=self.BG_CHAT)
         bubble.pack(anchor=align)
 
-        if is_file:
-            row = tk.Frame(bubble, bg=bg)
-            row.pack()
-            tk.Label(row, text=content, font=FONT_BODY, bg=bg, fg=fg,
-                     wraplength=360, justify="left", padx=12, pady=7,
-                     relief="flat").pack(side="left", fill="x", expand=True)
-            tk.Button(row, text="Download", font=FONT_BODY,
-                      bg=self.ACCENT, fg="white", relief="flat", bd=0,
-                      activebackground=self.ACCENT_HOVER, activeforeground="white",
-                      cursor="hand2",
-                      command=lambda: self._download_file(filename, file_data)
-                      ).pack(side="right", padx=8, pady=7)
+        if is_file and is_image and file_data:
+            photo = make_photo(file_data)
+            if photo is not None:
+                self._photo_refs.append(photo)
+                img_frame = tk.Frame(bubble, bg=bg, padx=4, pady=4)
+                img_frame.pack()
+                img_label = tk.Label(img_frame, image=photo, bg=bg, cursor="hand2")
+                img_label.pack()
+                tk.Label(img_frame, text=filename or content, font=FONT_SMALL,
+                         bg=bg, fg=fg, pady=2).pack()
+                img_label.bind("<Button-1>",
+                               lambda _, fn=filename, fd=file_data: self._download_file(fn, fd))
+            else:
+                self._render_file_download_row(bubble, content, bg, fg, filename, file_data)
+        elif is_file:
+            self._render_file_download_row(bubble, content, bg, fg, filename, file_data)
         else:
             tk.Label(bubble, text=content, font=FONT_BODY, bg=bg, fg=fg,
                      wraplength=420, justify="left", padx=12, pady=7,
@@ -797,6 +822,19 @@ class ChatApp(tk.Tk):
 
         self._scroll_bottom()
         return outer
+
+    def _render_file_download_row(self, parent, content, bg, fg, filename, file_data):
+        row = tk.Frame(parent, bg=bg)
+        row.pack()
+        tk.Label(row, text=content, font=FONT_BODY, bg=bg, fg=fg,
+                 wraplength=360, justify="left", padx=12, pady=7,
+                 relief="flat").pack(side="left", fill="x", expand=True)
+        tk.Button(row, text="Download", font=FONT_BODY,
+                  bg=self.ACCENT, fg="white", relief="flat", bd=0,
+                  activebackground=self.ACCENT_HOVER, activeforeground="white",
+                  cursor="hand2",
+                  command=lambda: self._download_file(filename, file_data)
+                  ).pack(side="right", padx=8, pady=7)
 
     def _delete_message(self, msg_index, chat_key):
         history = self.chat_history.get(chat_key, [])
@@ -821,7 +859,7 @@ class ChatApp(tk.Tk):
 
     def _add_bubble(self, content, sender, timestamp, is_file=False,
                     is_system=False, filename=None, file_data=None,
-                    chat_key=None, store=True, msg_id=None):
+                    chat_key=None, store=True, msg_id=None, is_image=False):
         if is_system:
             self._render_bubble(content, sender, timestamp,
                                 is_file=is_file, is_system=True,
@@ -834,7 +872,7 @@ class ChatApp(tk.Tk):
         payload = {
             "content": content, "sender": sender, "timestamp": timestamp,
             "is_file": is_file, "filename": filename, "file_data": file_data,
-            "msg_id": msg_id,
+            "msg_id": msg_id, "is_image": is_image,
         }
         if store:
             self._store_message(chat_key, payload)
@@ -845,8 +883,8 @@ class ChatApp(tk.Tk):
         if chat_key == self._chat_key():
             frame = self._render_bubble(content, sender, timestamp,
                                         is_file=is_file, filename=filename,
-                                        file_data=file_data, msg_index=msg_index,
-                                        chat_key=chat_key)
+                                        file_data=file_data, is_image=is_image,
+                                        msg_index=msg_index, chat_key=chat_key)
             if store:
                 self.bubble_frames.setdefault(chat_key, [])
                 if len(self.bubble_frames[chat_key]) < len(self.chat_history[chat_key]):
@@ -966,7 +1004,7 @@ class ChatApp(tk.Tk):
                 self._store_message(chat_key, {
                     "content": content, "sender": sender, "timestamp": ts,
                     "is_file": False, "filename": None, "file_data": None,
-                    "msg_id": msg_id,
+                    "msg_id": msg_id, "is_image": False,
                 })
 
         elif t == "file":
@@ -975,17 +1013,18 @@ class ChatApp(tk.Tk):
             data      = msg.get("data", "")
             ts        = msg.get("timestamp", "")
             msg_id    = msg.get("msg_id")
+            is_image  = msg.get("is_image", False) or is_image_filename(filename)
             recipient = msg.get("recipient")
             chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
             if chat_key == self._chat_key():
                 self._add_bubble(filename, sender=sender, timestamp=ts,
                                  is_file=True, filename=filename, file_data=data,
-                                 chat_key=chat_key, msg_id=msg_id)
+                                 is_image=is_image, chat_key=chat_key, msg_id=msg_id)
             else:
                 self._store_message(chat_key, {
                     "content": filename, "sender": sender, "timestamp": ts,
                     "is_file": True, "filename": filename, "file_data": data,
-                    "msg_id": msg_id,
+                    "msg_id": msg_id, "is_image": is_image,
                 })
 
         elif t == "deleted":
