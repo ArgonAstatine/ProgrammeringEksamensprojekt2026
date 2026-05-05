@@ -11,6 +11,7 @@ import base64
 from datetime import datetime
 from cryptography.fernet import Fernet
 
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("Server")
 

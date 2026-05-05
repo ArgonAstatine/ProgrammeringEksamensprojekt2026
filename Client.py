@@ -16,7 +16,7 @@ MAX_FILE_SIZE      = 1 * 1024 * 1024
 SESSION_PATH     = "session.json.enc"
 SESSION_KEY_PATH = "session.key"
 
-IMAGE_EXTENSIONS     = {".png", ".gif"}
+IMAGE_EXTENSIONS         = {".png", ".gif"}
 IMAGE_MAX_WIDTH_DISPLAY  = 380
 IMAGE_MAX_HEIGHT_DISPLAY = 280
 
@@ -166,11 +166,64 @@ def is_image_filename(filename: str) -> bool:
     return ext in IMAGE_EXTENSIONS
 
 
-def make_photo(data_b64: str) -> "tk.PhotoImage | None":
+def make_photo(data_b64: str):
     try:
         return tk.PhotoImage(data=data_b64)
     except tk.TclError:
         return None
+
+
+class ToastNotification(tk.Toplevel):
+    def __init__(self, master, title: str, message: str, duration_ms: int = 4000):
+        super().__init__(master)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(bg="#2b2d31")
+
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        w, h = 320, 72
+        x = sw - w - 16
+        y = sh - h - 48
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+        accent_bar = tk.Frame(self, bg="#5865f2", width=4)
+        accent_bar.pack(side="left", fill="y")
+
+        content = tk.Frame(self, bg="#2b2d31", padx=12, pady=10)
+        content.pack(side="left", fill="both", expand=True)
+
+        tk.Label(content, text=title, font=("Segoe UI", 9, "bold"),
+                 bg="#2b2d31", fg="#ffffff", anchor="w").pack(fill="x")
+        tk.Label(content, text=message[:60] + ("…" if len(message) > 60 else ""),
+                 font=("Segoe UI", 9), bg="#2b2d31", fg="#b5bac1", anchor="w",
+                 wraplength=260, justify="left").pack(fill="x")
+
+        close_btn = tk.Label(self, text="✕", font=("Segoe UI", 9),
+                             bg="#2b2d31", fg="#80848e", cursor="hand2", padx=8)
+        close_btn.pack(side="right", anchor="n", pady=8)
+        close_btn.bind("<Button-1>", lambda _: self._dismiss())
+
+        self.bind("<Button-1>", lambda _: self._on_click())
+
+        self._master = master
+        self._after_id = self.after(duration_ms, self._dismiss)
+
+    def _dismiss(self):
+        try:
+            self.after_cancel(self._after_id)
+        except Exception:
+            pass
+        self.destroy()
+
+    def _on_click(self):
+        self._dismiss()
+        try:
+            self._master.deiconify()
+            self._master.lift()
+            self._master.focus_force()
+        except Exception:
+            pass
 
 
 class LoginWindow(tk.Tk):
@@ -256,22 +309,24 @@ class LoginWindow(tk.Tk):
 class ChatApp(tk.Tk):
     def __init__(self, sock, username, password="", token="", ip="127.0.0.1"):
         super().__init__()
-        self.sock        = sock
-        self.username    = username
-        self.password    = password
-        self.token       = token
-        self.ip          = ip
-        self.active_chat = None
-        self.stop_event  = threading.Event()
-        self.buf         = ""
-        self.user_status     = {}
-        self.chat_history    = {"#alle": []}
-        self.bubble_frames   = {"#alle": []}
-        self.friends         = set()
-        self.pending_sent    = set()
+        self.current_panel    = "chat"
+        self.window_open      = True
+        self.sock             = sock
+        self.username         = username
+        self.password         = password
+        self.token            = token
+        self.ip               = ip
+        self.active_chat      = None
+        self.stop_event       = threading.Event()
+        self.buf              = ""
+        self.user_status      = {}
+        self.chat_history     = {"#alle": []}
+        self.bubble_frames    = {"#alle": []}
+        self.friends          = set()
+        self.pending_sent     = set()
         self.pending_received = set()
-        self.current_panel   = "chat"
         self._photo_refs: list = []
+        self._active_toast    = None
 
         session = load_session()
         saved_theme = session.get("theme", "Discord Mørk")
@@ -283,8 +338,10 @@ class ChatApp(tk.Tk):
         self.title("Chat")
         self.configure(bg=self.BG_DARK)
         self.geometry("1100x680")
-        self._center()
+        self._place_corner()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Unmap>", self._on_minimize)
+        self.bind("<Map>",   self._on_restore)
 
         self._build_ui()
         self._start_listener()
@@ -316,11 +373,41 @@ class ChatApp(tk.Tk):
         self._build_ui()
         self._refresh_chat()
 
-    def _center(self):
+    def _corner_pos(self):
+        return self.winfo_screenwidth() - 1100 - 10, 10
+
+    def _place_corner(self):
         self.update_idletasks()
-        x = (self.winfo_screenwidth() - 1100) // 2
-        y = (self.winfo_screenheight() - 680) // 2
+        x, y = self._corner_pos()
         self.geometry(f"1100x680+{x}+{y}")
+
+    def _on_minimize(self, _=None):
+        self.window_open = False
+
+    def _on_restore(self, _=None):
+        self.window_open = True
+
+    def _notify_popup(self):
+        if self.window_open:
+            return
+        x, y = self._corner_pos()
+        self.geometry(f"1100x680+{x}+{y}")
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        self.window_open = True
+
+    def _show_toast(self, title: str, message: str):
+        if self._active_toast is not None:
+            try:
+                self._active_toast.destroy()
+            except Exception:
+                pass
+        self._active_toast = ToastNotification(self, title, message)
+
+    def _notify_group(self, sender: str = "", content: str = ""):
+        self._show_toast(f"Chat – {sender}", content or "Ny besked")
+        self._notify_popup()
 
     def _build_ui(self):
         self.left = tk.Frame(self, bg=self.BG_PANEL, width=220)
@@ -997,6 +1084,8 @@ class ChatApp(tk.Tk):
             msg_id    = msg.get("msg_id")
             recipient = msg.get("recipient")
             chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
+            if sender != self.username:
+                self._notify_group(sender=sender, content=content)
             if chat_key == self._chat_key():
                 self._add_bubble(content, sender=sender, timestamp=ts,
                                  chat_key=chat_key, msg_id=msg_id)
@@ -1016,6 +1105,8 @@ class ChatApp(tk.Tk):
             is_image  = msg.get("is_image", False) or is_image_filename(filename)
             recipient = msg.get("recipient")
             chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
+            if sender != self.username:
+                self._notify_group(sender=sender, content=f"Sendte en fil: {filename}")
             if chat_key == self._chat_key():
                 self._add_bubble(filename, sender=sender, timestamp=ts,
                                  is_file=True, filename=filename, file_data=data,
@@ -1056,6 +1147,7 @@ class ChatApp(tk.Tk):
         elif t == "friend_request":
             requester = msg.get("from", "?")
             self.pending_received.add(requester)
+            self._notify_group(sender=requester, content="Sendte dig en venneanmodning")
             self._add_bubble(
                 f" {requester} har sendt dig en venneanmodning. Gå til Bruger Hub for at svare.",
                 sender="system", timestamp="", is_system=True
