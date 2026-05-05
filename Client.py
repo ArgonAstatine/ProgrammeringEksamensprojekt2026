@@ -3,10 +3,16 @@ import threading
 import json
 import os
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from datetime import datetime
 from cryptography.fernet import Fernet
 import base64
+
+try:
+    import pygame
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
 
 
 PORT = 5555
@@ -173,6 +179,61 @@ def make_photo(data_b64: str):
         return None
 
 
+class MusicPlayer:
+    def __init__(self):
+        self.enabled = False
+        self.path    = None
+        self.volume  = 0.5
+
+    def load(self, path: str):
+        if not PYGAME_AVAILABLE:
+            return False
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            pygame.mixer.music.load(path)
+            self.path = path
+            return True
+        except Exception:
+            return False
+
+    def play(self):
+        if not PYGAME_AVAILABLE or not self.path:
+            return
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            pygame.mixer.music.load(self.path)
+            pygame.mixer.music.set_volume(self.volume)
+            pygame.mixer.music.play(-1)
+            self.enabled = True
+        except Exception:
+            pass
+
+    def stop(self):
+        if not PYGAME_AVAILABLE:
+            return
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+        self.enabled = False
+
+    def set_volume(self, vol: float):
+        self.volume = max(0.0, min(1.0, vol))
+        if PYGAME_AVAILABLE:
+            try:
+                pygame.mixer.music.set_volume(self.volume)
+            except Exception:
+                pass
+
+    def toggle(self):
+        if self.enabled:
+            self.stop()
+        else:
+            self.play()
+
+
 class ToastNotification(tk.Toplevel):
     def __init__(self, master, title: str, message: str, duration_ms: int = 4000):
         super().__init__(master)
@@ -328,6 +389,10 @@ class ChatApp(tk.Tk):
         self._photo_refs: list = []
         self._active_toast    = None
 
+        self.rooms: dict = {}
+        self.pending_room_invites: list = []
+        self.music = MusicPlayer()
+
         session = load_session()
         saved_theme = session.get("theme", "Discord Mørk")
         if saved_theme not in THEMES:
@@ -409,6 +474,9 @@ class ChatApp(tk.Tk):
         self._show_toast(f"Chat – {sender}", content or "Ny besked")
         self._notify_popup()
 
+    def _room_chat_key(self, room_id):
+        return f"#rum:{room_id}"
+
     def _build_ui(self):
         self.left = tk.Frame(self, bg=self.BG_PANEL, width=220)
         self.left.pack(side="left", fill="y")
@@ -420,13 +488,21 @@ class ChatApp(tk.Tk):
         tk.Label(top_bar, text=f"  {self.username}", font=FONT_TITLE,
                  bg=self.BG_DARK, fg=self.TEXT_MAIN, anchor="w").pack(side="left", fill="y", padx=4)
 
+        music_btn = tk.Button(
+            top_bar, text="🎵", font=("Segoe UI", 13),
+            bg=self.BG_DARK, fg=self.TEXT_MUTED, relief="flat", bd=0,
+            activebackground=self.BG_DARK, activeforeground=self.TEXT_MAIN,
+            cursor="hand2", command=self._open_music_dialog
+        )
+        music_btn.pack(side="right", padx=2)
+
         theme_btn = tk.Button(
             top_bar, text="🎨", font=("Segoe UI", 13),
             bg=self.BG_DARK, fg=self.TEXT_MUTED, relief="flat", bd=0,
             activebackground=self.BG_DARK, activeforeground=self.TEXT_MAIN,
             cursor="hand2", command=self._open_theme_dialog
         )
-        theme_btn.pack(side="right", padx=8)
+        theme_btn.pack(side="right", padx=2)
 
         self.date_label = tk.Label(self.left, text="", font=FONT_SMALL,
                                    bg=self.BG_PANEL, fg=self.TEXT_MUTED)
@@ -454,10 +530,10 @@ class ChatApp(tk.Tk):
         tk.Frame(self.left, bg=self.SEPARATOR, height=1).pack(fill="x", padx=10, pady=4)
 
         tk.Label(self.left, text="  VENNELISTE", font=("Segoe UI", 8, "bold"),
-                 bg=self.BG_PANEL, fg=self.TEXT_MUTED, anchor="w").pack(fill="x", padx=8, pady=(0, 4))
+                 bg=self.BG_PANEL, fg=self.TEXT_MUTED, anchor="w").pack(fill="x", padx=8, pady=(0, 2))
 
         list_frame = tk.Frame(self.left, bg=self.BG_PANEL)
-        list_frame.pack(fill="both", expand=True, padx=4)
+        list_frame.pack(fill="x", padx=4)
 
         sb = tk.Scrollbar(list_frame, bg=self.BG_PANEL, troughcolor=self.BG_PANEL,
                           relief="flat", bd=0, width=6)
@@ -468,9 +544,9 @@ class ChatApp(tk.Tk):
             font=FONT_BODY, relief="flat", bd=0,
             selectbackground="#35373c", selectforeground=self.TEXT_MAIN,
             activestyle="none", yscrollcommand=sb.set,
-            highlightthickness=0
+            highlightthickness=0, height=8
         )
-        self.friend_list.pack(fill="both", expand=True)
+        self.friend_list.pack(fill="x")
         sb.config(command=self.friend_list.yview)
         self.friend_list.bind("<<ListboxSelect>>", self._on_friend_select)
         self.friend_list.bind("<Button-3>", self._on_friend_right_click)
@@ -481,6 +557,41 @@ class ChatApp(tk.Tk):
             idx = self.friend_list.size() - 1
             online = self.user_status.get(name, False)
             self.friend_list.itemconfig(idx, fg=self.ONLINE_DOT if online else self.DANGER)
+
+        tk.Frame(self.left, bg=self.SEPARATOR, height=1).pack(fill="x", padx=10, pady=4)
+
+        rooms_header = tk.Frame(self.left, bg=self.BG_PANEL)
+        rooms_header.pack(fill="x", padx=8, pady=(0, 2))
+        tk.Label(rooms_header, text="  CHATRUM", font=("Segoe UI", 8, "bold"),
+                 bg=self.BG_PANEL, fg=self.TEXT_MUTED, anchor="w").pack(side="left", fill="x", expand=True)
+        tk.Button(rooms_header, text="+", font=("Segoe UI", 9, "bold"),
+                  bg=self.BG_PANEL, fg=self.ACCENT, relief="flat", bd=0,
+                  activebackground=self.BG_PANEL, activeforeground=self.ACCENT_HOVER,
+                  cursor="hand2", command=self._create_room).pack(side="right")
+
+        rooms_list_frame = tk.Frame(self.left, bg=self.BG_PANEL)
+        rooms_list_frame.pack(fill="x", padx=4)
+
+        rsb = tk.Scrollbar(rooms_list_frame, bg=self.BG_PANEL, troughcolor=self.BG_PANEL,
+                           relief="flat", bd=0, width=6)
+        rsb.pack(side="right", fill="y")
+
+        self.room_list = tk.Listbox(
+            rooms_list_frame, bg=self.BG_PANEL, fg=self.TEXT_MAIN,
+            font=FONT_BODY, relief="flat", bd=0,
+            selectbackground="#35373c", selectforeground=self.TEXT_MAIN,
+            activestyle="none", yscrollcommand=rsb.set,
+            highlightthickness=0, height=6
+        )
+        self.room_list.pack(fill="x")
+        rsb.config(command=self.room_list.yview)
+        self.room_list.bind("<<ListboxSelect>>", self._on_room_select)
+        self.room_list.bind("<Button-3>", self._on_room_right_click)
+
+        for room_id, room in self.rooms.items():
+            self.room_list.insert("end", f" # {room['name']}")
+
+        tk.Frame(self.left, bg=self.SEPARATOR, height=1).pack(fill="x", padx=10, pady=4)
 
         broadcast_row = tk.Frame(self.left, bg=self.BG_PANEL, cursor="hand2")
         broadcast_row.pack(fill="x", padx=8, pady=(0, 8))
@@ -500,6 +611,86 @@ class ChatApp(tk.Tk):
             self._show_hub_panel()
         else:
             self._show_chat_panel()
+
+    def _open_music_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Baggrundsmusik")
+        dialog.configure(bg=self.BG_DARK)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        self.update_idletasks()
+        w, h = 340, 220
+        x = self.winfo_x() + (1100 - w) // 2
+        y = self.winfo_y() + (680 - h) // 2
+        dialog.geometry(f"{w}x{h}+{x}+{y}")
+
+        tk.Label(dialog, text="🎵  Baggrundsmusik", font=FONT_TITLE,
+                 bg=self.BG_DARK, fg=self.TEXT_MAIN).pack(pady=(16, 8))
+
+        if not PYGAME_AVAILABLE:
+            tk.Label(dialog, text="pygame er ikke installeret.\nKør: pip install pygame",
+                     font=FONT_BODY, bg=self.BG_DARK, fg=self.DANGER,
+                     justify="center").pack(pady=20)
+            return
+
+        path_var = tk.StringVar(value=self.music.path or "Ingen fil valgt")
+        path_label = tk.Label(dialog, textvariable=path_var, font=FONT_SMALL,
+                              bg=self.BG_DARK, fg=self.TEXT_MUTED,
+                              wraplength=300, justify="center")
+        path_label.pack(pady=(0, 8))
+
+        def pick_file():
+            path = filedialog.askopenfilename(
+                title="Vælg MP3-fil",
+                filetypes=[("MP3-filer", "*.mp3"), ("Alle lydfiler", "*.mp3 *.wav *.ogg *.flac"), ("Alle filer", "*.*")]
+            )
+            if path:
+                if self.music.load(path):
+                    path_var.set(os.path.basename(path))
+                    toggle_btn.config(text="▶ Afspil", bg=self.ACCENT)
+                else:
+                    path_var.set("Fejl ved indlæsning af fil")
+
+        tk.Button(dialog, text="📂  Vælg MP3-fil", font=FONT_BODY,
+                  bg=self.BG_INPUT, fg=self.TEXT_MAIN, relief="flat", bd=0,
+                  activebackground="#35373c", activeforeground=self.TEXT_MAIN,
+                  cursor="hand2", padx=12, pady=6,
+                  command=pick_file).pack(pady=4)
+
+        def toggle():
+            self.music.toggle()
+            if self.music.enabled:
+                toggle_btn.config(text="⏹ Stop", bg=self.DANGER)
+            else:
+                toggle_btn.config(text="▶ Afspil", bg=self.ACCENT)
+
+        toggle_label = "⏹ Stop" if self.music.enabled else "▶ Afspil"
+        toggle_bg    = self.DANGER if self.music.enabled else self.ACCENT
+        toggle_btn   = tk.Button(dialog, text=toggle_label, font=FONT_BODY,
+                                 bg=toggle_bg, fg="white", relief="flat", bd=0,
+                                 activebackground=self.ACCENT_HOVER, activeforeground="white",
+                                 cursor="hand2", padx=16, pady=6,
+                                 command=toggle)
+        toggle_btn.pack(pady=4)
+
+        vol_frame = tk.Frame(dialog, bg=self.BG_DARK)
+        vol_frame.pack(pady=(8, 4))
+        tk.Label(vol_frame, text="Lydstyrke:", font=FONT_SMALL,
+                 bg=self.BG_DARK, fg=self.TEXT_MUTED).pack(side="left", padx=(0, 8))
+
+        vol_var = tk.DoubleVar(value=self.music.volume)
+
+        def on_vol(val):
+            self.music.set_volume(float(val))
+
+        vol_scale = tk.Scale(vol_frame, from_=0.0, to=1.0, resolution=0.05,
+                             orient="horizontal", variable=vol_var,
+                             bg=self.BG_DARK, fg=self.TEXT_MAIN,
+                             troughcolor=self.BG_INPUT, highlightthickness=0,
+                             relief="flat", length=160, showvalue=False,
+                             command=on_vol)
+        vol_scale.pack(side="left")
 
     def _open_theme_dialog(self):
         dialog = tk.Toplevel(self)
@@ -548,6 +739,112 @@ class ChatApp(tk.Tk):
             row.bind("<Leave>", lambda e, r=row, n=name: r.config(
                 bg=self.BG_PANEL if n == self.current_theme_name else self.BG_DARK))
 
+    def _create_room(self):
+        name = simpledialog.askstring("Opret chatrum", "Rutnavn:", parent=self)
+        if name and name.strip():
+            send_msg(self.sock, {"type": "create_room", "name": name.strip()})
+
+    def _invite_to_room(self, room_id):
+        room = self.rooms.get(room_id)
+        if not room:
+            return
+        members = room.get("members", [])
+        candidates = [f for f in self.friends if f not in members]
+        if not candidates:
+            messagebox.showinfo("Inviter", "Ingen venner at invitere (alle er allerede med eller du har ingen venner).")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Inviter til #{room['name']}")
+        dialog.configure(bg=self.BG_DARK)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        self.update_idletasks()
+        w, h = 260, min(60 + len(candidates) * 40, 400)
+        x = self.winfo_x() + (1100 - w) // 2
+        y = self.winfo_y() + (680 - h) // 2
+        dialog.geometry(f"{w}x{h}+{x}+{y}")
+
+        tk.Label(dialog, text="Vælg ven at invitere:", font=FONT_BODY,
+                 bg=self.BG_DARK, fg=self.TEXT_MAIN).pack(pady=(12, 6))
+
+        frame = tk.Frame(dialog, bg=self.BG_DARK)
+        frame.pack(fill="both", expand=True, padx=16)
+
+        for name in candidates:
+            def invite(n=name, d=dialog):
+                send_msg(self.sock, {"type": "invite_to_room", "room_id": room_id, "username": n})
+                d.destroy()
+            tk.Button(frame, text=name, font=FONT_BODY,
+                      bg=self.BG_PANEL, fg=self.TEXT_MAIN, relief="flat", bd=0,
+                      activebackground=self.ACCENT, activeforeground="white",
+                      cursor="hand2", padx=10, pady=6, anchor="w",
+                      command=invite).pack(fill="x", pady=2)
+
+    def _leave_room(self, room_id):
+        room = self.rooms.get(room_id)
+        name = room["name"] if room else str(room_id)
+        if messagebox.askyesno("Forlad rum", f"Er du sikker på, at du vil forlade #{name}?"):
+            send_msg(self.sock, {"type": "leave_room", "room_id": room_id})
+
+    def _on_room_select(self, _=None):
+        sel = self.room_list.curselection()
+        if not sel:
+            return
+        text = self.room_list.get(sel[0]).strip().lstrip("# ").strip()
+        for room_id, room in self.rooms.items():
+            if room["name"] == text:
+                self.active_chat = self._room_chat_key(room_id)
+                self.header_label.config(text=f"# {room['name']}")
+                self._show_chat_panel()
+                self._refresh_chat()
+                return
+
+    def _on_room_right_click(self, event):
+        idx = self.room_list.nearest(event.y)
+        if idx < 0 or idx >= self.room_list.size():
+            return
+        text = self.room_list.get(idx).strip().lstrip("# ").strip()
+        room_id = None
+        for rid, room in self.rooms.items():
+            if room["name"] == text:
+                room_id = rid
+                break
+        if room_id is None:
+            return
+        menu = tk.Menu(self, tearoff=0, bg=self.BG_PANEL, fg=self.TEXT_MAIN,
+                       activebackground=self.ACCENT, activeforeground="white",
+                       relief="flat", bd=0)
+        menu.add_command(label="Inviter ven",
+                         command=lambda: self._invite_to_room(room_id))
+        menu.add_separator()
+        menu.add_command(label="Forlad rum",
+                         command=lambda: self._leave_room(room_id))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _add_room_to_sidebar(self, room):
+        room_id = room["id"]
+        if room_id in self.rooms:
+            return
+        self.rooms[room_id] = room
+        chat_key = self._room_chat_key(room_id)
+        self.chat_history.setdefault(chat_key, [])
+        self.bubble_frames.setdefault(chat_key, [])
+        self.room_list.insert("end", f" # {room['name']}")
+
+    def _remove_room_from_sidebar(self, room_id):
+        room = self.rooms.pop(room_id, None)
+        if not room:
+            return
+        items = list(self.room_list.get(0, "end"))
+        target = f" # {room['name']}"
+        if target in items:
+            self.room_list.delete(items.index(target))
+        chat_key = self._room_chat_key(room_id)
+        if self.active_chat == chat_key:
+            self._select_broadcast()
+
     def _build_chat_panel(self):
         self.chat_panel = tk.Frame(self.right, bg=self.BG_CHAT)
 
@@ -555,7 +852,7 @@ class ChatApp(tk.Tk):
         self.chat_header.pack(fill="x")
         self.chat_header.pack_propagate(False)
         tk.Frame(self.chat_panel, bg=self.SEPARATOR, height=1).pack(fill="x")
-        header_text = f"@ {self.active_chat}" if self.active_chat else "# alle"
+        header_text = f"@ {self.active_chat}" if self.active_chat and not self.active_chat.startswith("#") else (self.active_chat or "# alle")
         self.header_label = tk.Label(self.chat_header, text=header_text,
                                      font=FONT_TITLE, bg=self.BG_CHAT, fg=self.TEXT_MAIN,
                                      anchor="w", padx=16)
@@ -801,6 +1098,7 @@ class ChatApp(tk.Tk):
     def _select_broadcast(self):
         self.active_chat = None
         self.friend_list.selection_clear(0, "end")
+        self.room_list.selection_clear(0, "end")
         self.header_label.config(text="# alle")
         self._show_chat_panel()
         self._refresh_chat()
@@ -828,7 +1126,10 @@ class ChatApp(tk.Tk):
         encoded  = base64.b64encode(raw).decode("utf-8")
         is_image = is_image_filename(fname)
         payload  = {"type": "file", "filename": fname, "data": encoded, "is_image": is_image}
-        if self.active_chat is not None:
+        ck = self._chat_key()
+        if ck.startswith("#rum:"):
+            payload["room_id"] = int(ck.split(":")[1])
+        elif self.active_chat is not None:
             payload["recipient"] = self.active_chat
         send_msg(self.sock, payload)
 
@@ -934,7 +1235,9 @@ class ChatApp(tk.Tk):
         if msg_id is None:
             return
         payload = {"type": "delete", "msg_id": msg_id}
-        if chat_key != "#alle":
+        if chat_key.startswith("#rum:"):
+            payload["room_id"] = int(chat_key.split(":")[1])
+        elif chat_key != "#alle":
             payload["recipient"] = chat_key
         send_msg(self.sock, payload)
 
@@ -1077,24 +1380,94 @@ class ChatApp(tk.Tk):
             self._add_bubble(f"Auth fejl: {msg.get('msg','')}", sender="system",
                              timestamp="", is_system=True)
 
+        elif t == "my_rooms":
+            for room in msg.get("rooms", []):
+                self._add_room_to_sidebar(room)
+            for invite in msg.get("invites", []):
+                self._handle_room_invite(invite["room_id"], invite["room_name"], invite["inviter"])
+
+        elif t == "room_created":
+            room = msg.get("room", {})
+            self._add_room_to_sidebar(room)
+            self._add_bubble(f"Chatrum '#{room['name']}' oprettet!", sender="system", timestamp="", is_system=True)
+
+        elif t == "room_joined":
+            room = msg.get("room", {})
+            self._add_room_to_sidebar(room)
+            self._add_bubble(f"Du er nu med i '#{room['name']}'!", sender="system", timestamp="", is_system=True)
+
+        elif t == "room_left":
+            room_id = msg.get("room_id")
+            self._remove_room_from_sidebar(room_id)
+
+        elif t == "room_member_joined":
+            room_id   = msg.get("room_id")
+            room_name = msg.get("room_name", "")
+            username  = msg.get("username", "")
+            chat_key  = self._room_chat_key(room_id)
+            if room_id in self.rooms:
+                if username not in self.rooms[room_id]["members"]:
+                    self.rooms[room_id]["members"].append(username)
+            self._add_bubble(f"{username} joined #{room_name}", sender="system",
+                             timestamp="", is_system=True)
+
+        elif t == "room_member_left":
+            room_id   = msg.get("room_id")
+            username  = msg.get("username", "")
+            room_name = msg.get("room_name", "")
+            if room_id in self.rooms:
+                self.rooms[room_id]["members"] = [m for m in self.rooms[room_id]["members"] if m != username]
+            self._add_bubble(f"{username} forlod #{room_name}", sender="system",
+                             timestamp="", is_system=True)
+
+        elif t == "room_invite":
+            self._handle_room_invite(msg.get("room_id"), msg.get("room_name", ""), msg.get("inviter", ""))
+
+        elif t == "room_invite_sent":
+            room_name = msg.get("room_name", "")
+            invitee   = msg.get("invitee", "")
+            self._show_hub_notice(f"Invitation sendt til {invitee} for #{room_name}!", self.ONLINE_DOT)
+
+        elif t == "room_invite_declined":
+            username  = msg.get("username", "")
+            room_name = msg.get("room_name", "")
+            self._show_hub_notice(f"{username} afslog invitation til #{room_name}.", self.DANGER)
+
         elif t == "message":
             sender    = msg.get("sender", "?")
             content   = msg.get("content", "")
             ts        = msg.get("timestamp", "")
             msg_id    = msg.get("msg_id")
             recipient = msg.get("recipient")
-            chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
-            if sender != self.username:
-                self._notify_group(sender=sender, content=content)
-            if chat_key == self._chat_key():
-                self._add_bubble(content, sender=sender, timestamp=ts,
-                                 chat_key=chat_key, msg_id=msg_id)
+            room_id   = msg.get("room_id")
+
+            if room_id:
+                chat_key = self._room_chat_key(room_id)
+                if sender != self.username:
+                    room_name = self.rooms.get(room_id, {}).get("name", str(room_id))
+                    self._notify_group(sender=sender, content=f"[#{room_name}] {content}")
+                if chat_key == self._chat_key():
+                    self._add_bubble(content, sender=sender, timestamp=ts,
+                                     chat_key=chat_key, msg_id=msg_id)
+                else:
+                    self._store_message(chat_key, {
+                        "content": content, "sender": sender, "timestamp": ts,
+                        "is_file": False, "filename": None, "file_data": None,
+                        "msg_id": msg_id, "is_image": False,
+                    })
             else:
-                self._store_message(chat_key, {
-                    "content": content, "sender": sender, "timestamp": ts,
-                    "is_file": False, "filename": None, "file_data": None,
-                    "msg_id": msg_id, "is_image": False,
-                })
+                chat_key = (sender if sender != self.username else recipient) if recipient else "#alle"
+                if sender != self.username:
+                    self._notify_group(sender=sender, content=content)
+                if chat_key == self._chat_key():
+                    self._add_bubble(content, sender=sender, timestamp=ts,
+                                     chat_key=chat_key, msg_id=msg_id)
+                else:
+                    self._store_message(chat_key, {
+                        "content": content, "sender": sender, "timestamp": ts,
+                        "is_file": False, "filename": None, "file_data": None,
+                        "msg_id": msg_id, "is_image": False,
+                    })
 
         elif t == "file":
             sender    = msg.get("sender", "?")
@@ -1104,19 +1477,37 @@ class ChatApp(tk.Tk):
             msg_id    = msg.get("msg_id")
             is_image  = msg.get("is_image", False) or is_image_filename(filename)
             recipient = msg.get("recipient")
-            chat_key  = (sender if sender != self.username else recipient) if recipient else "#alle"
-            if sender != self.username:
-                self._notify_group(sender=sender, content=f"Sendte en fil: {filename}")
-            if chat_key == self._chat_key():
-                self._add_bubble(filename, sender=sender, timestamp=ts,
-                                 is_file=True, filename=filename, file_data=data,
-                                 is_image=is_image, chat_key=chat_key, msg_id=msg_id)
+            room_id   = msg.get("room_id")
+
+            if room_id:
+                chat_key = self._room_chat_key(room_id)
+                if sender != self.username:
+                    room_name = self.rooms.get(room_id, {}).get("name", str(room_id))
+                    self._notify_group(sender=sender, content=f"[#{room_name}] Sendte en fil: {filename}")
+                if chat_key == self._chat_key():
+                    self._add_bubble(filename, sender=sender, timestamp=ts,
+                                     is_file=True, filename=filename, file_data=data,
+                                     is_image=is_image, chat_key=chat_key, msg_id=msg_id)
+                else:
+                    self._store_message(chat_key, {
+                        "content": filename, "sender": sender, "timestamp": ts,
+                        "is_file": True, "filename": filename, "file_data": data,
+                        "msg_id": msg_id, "is_image": is_image,
+                    })
             else:
-                self._store_message(chat_key, {
-                    "content": filename, "sender": sender, "timestamp": ts,
-                    "is_file": True, "filename": filename, "file_data": data,
-                    "msg_id": msg_id, "is_image": is_image,
-                })
+                chat_key = (sender if sender != self.username else recipient) if recipient else "#alle"
+                if sender != self.username:
+                    self._notify_group(sender=sender, content=f"Sendte en fil: {filename}")
+                if chat_key == self._chat_key():
+                    self._add_bubble(filename, sender=sender, timestamp=ts,
+                                     is_file=True, filename=filename, file_data=data,
+                                     is_image=is_image, chat_key=chat_key, msg_id=msg_id)
+                else:
+                    self._store_message(chat_key, {
+                        "content": filename, "sender": sender, "timestamp": ts,
+                        "is_file": True, "filename": filename, "file_data": data,
+                        "msg_id": msg_id, "is_image": is_image,
+                    })
 
         elif t == "deleted":
             msg_id   = msg.get("msg_id")
@@ -1209,17 +1600,52 @@ class ChatApp(tk.Tk):
         elif t == "disconnected":
             self.after(200, self._on_close)
 
+    def _handle_room_invite(self, room_id, room_name, inviter):
+        self._notify_group(sender=inviter, content=f"Inviterede dig til #{room_name}")
+        self._add_bubble(
+            f"{inviter} inviterede dig til chatrum '#{room_name}'. Accepter eller afvis:",
+            sender="system", timestamp="", is_system=True
+        )
+
+        bar = tk.Frame(self.msg_inner, bg=self.BG_CHAT)
+        bar.pack(fill="x", padx=16, pady=4)
+
+        tk.Label(bar, text=f"#{room_name}", font=FONT_NAME,
+                 bg=self.BG_CHAT, fg=self.ACCENT).pack(side="left", padx=(0, 10))
+
+        def accept():
+            bar.destroy()
+            send_msg(self.sock, {"type": "room_invite_response", "room_id": room_id, "accepted": True})
+
+        def decline():
+            bar.destroy()
+            send_msg(self.sock, {"type": "room_invite_response", "room_id": room_id, "accepted": False})
+
+        tk.Button(bar, text="✓ Accepter", font=FONT_SMALL,
+                  bg=self.ONLINE_DOT, fg="white", relief="flat", bd=0,
+                  cursor="hand2", padx=10, pady=4,
+                  command=accept).pack(side="left", padx=(0, 6))
+        tk.Button(bar, text="✗ Afvis", font=FONT_SMALL,
+                  bg=self.DANGER, fg="white", relief="flat", bd=0,
+                  cursor="hand2", padx=10, pady=4,
+                  command=decline).pack(side="left")
+        self._scroll_bottom()
+
     def _send(self):
         text = self.input_var.get().strip()
         if not text:
             return
         self.input_var.set("")
+        ck = self._chat_key()
         payload = {"type": "message", "content": text}
-        if self.active_chat is not None:
+        if ck.startswith("#rum:"):
+            payload["room_id"] = int(ck.split(":")[1])
+        elif self.active_chat is not None:
             payload["recipient"] = self.active_chat
         send_msg(self.sock, payload)
 
     def _on_close(self):
+        self.music.stop()
         try:
             send_msg(self.sock, {"type": "disconnect"})
         except OSError:

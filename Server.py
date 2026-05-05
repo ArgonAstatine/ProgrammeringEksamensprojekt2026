@@ -73,7 +73,8 @@ def load_db(fernet: Fernet) -> sqlite3.Connection:
             sender    TEXT NOT NULL,
             content   TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            recipient TEXT
+            recipient TEXT,
+            room_id   INTEGER
         )
     """)
     conn.execute("""
@@ -86,10 +87,38 @@ def load_db(fernet: Fernet) -> sqlite3.Connection:
             UNIQUE(requester, receiver)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chatrooms (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            name    TEXT NOT NULL,
+            owner   TEXT NOT NULL,
+            created TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS room_members (
+            room_id  INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            joined   TEXT NOT NULL,
+            PRIMARY KEY (room_id, username)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS room_invites (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id  INTEGER NOT NULL,
+            inviter  TEXT NOT NULL,
+            invitee  TEXT NOT NULL,
+            created  TEXT NOT NULL,
+            UNIQUE(room_id, invitee)
+        )
+    """)
 
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
     if "recipient" not in existing_cols:
         conn.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
+    if "room_id" not in existing_cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN room_id INTEGER")
 
     existing_user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "last_seen" not in existing_user_cols:
@@ -159,6 +188,19 @@ def broadcast(payload, exclude=None):
                 pass
 
 
+def broadcast_to_room(payload, room_id, members: list, exclude=None):
+    with clients_lock:
+        for username in members:
+            if username == exclude:
+                continue
+            handler = clients.get(username)
+            if handler:
+                try:
+                    send_msg(handler.sock, payload)
+                except OSError:
+                    pass
+
+
 class ClientHandler(threading.Thread):
     def __init__(self, sock, addr, db, fernet):
         super().__init__(daemon=True)
@@ -222,6 +264,10 @@ class ClientHandler(threading.Thread):
             save_db(self.fernet, self.db)
             return cur.lastrowid
 
+    def _get_room_members(self, room_id):
+        rows = self.db_read_all("SELECT username FROM room_members WHERE room_id = ?", (room_id,))
+        return [r[0] for r in rows]
+
     def handle(self, msg):
         t = msg.get("type")
 
@@ -247,12 +293,34 @@ class ClientHandler(threading.Thread):
                 send_msg(self.sock, {"type": "error", "msg": f"Besked overskrider maks. {MAX_MESSAGE_LENGTH} tegn."})
                 return True
             recipient = msg.get("recipient")
+            room_id   = msg.get("room_id")
             timestamp = datetime.now().strftime("%H:%M:%S")
-            msg_id = self.db_write_returning(
-                "INSERT INTO messages (sender, content, timestamp, recipient) VALUES (?, ?, ?, ?)",
-                (self.username, content, timestamp, recipient)
-            )
-            if recipient:
+
+            if room_id:
+                row = self.db_read("SELECT id, name FROM chatrooms WHERE id = ?", (room_id,))
+                if not row:
+                    send_msg(self.sock, {"type": "error", "msg": "Chatrum findes ikke."})
+                    return True
+                member = self.db_read("SELECT username FROM room_members WHERE room_id=? AND username=?", (room_id, self.username))
+                if not member:
+                    send_msg(self.sock, {"type": "error", "msg": "Du er ikke medlem af dette rum."})
+                    return True
+                msg_id = self.db_write_returning(
+                    "INSERT INTO messages (sender, content, timestamp, room_id) VALUES (?, ?, ?, ?)",
+                    (self.username, content, timestamp, room_id)
+                )
+                members = self._get_room_members(room_id)
+                log.info("[%s] [rum:%s] %s: %s", timestamp, room_id, self.username, content)
+                broadcast_to_room(
+                    {"type": "message", "sender": self.username, "content": content,
+                     "timestamp": timestamp, "room_id": room_id, "msg_id": msg_id},
+                    room_id, members
+                )
+            elif recipient:
+                msg_id = self.db_write_returning(
+                    "INSERT INTO messages (sender, content, timestamp, recipient) VALUES (?, ?, ?, ?)",
+                    (self.username, content, timestamp, recipient)
+                )
                 with clients_lock:
                     target = clients.get(recipient)
                 if not target:
@@ -262,6 +330,10 @@ class ClientHandler(threading.Thread):
                 send_msg(target.sock, {"type": "message", "sender": self.username, "content": content, "timestamp": timestamp, "recipient": recipient, "msg_id": msg_id})
                 send_msg(self.sock,   {"type": "message", "sender": self.username, "content": content, "timestamp": timestamp, "recipient": recipient, "msg_id": msg_id})
             else:
+                msg_id = self.db_write_returning(
+                    "INSERT INTO messages (sender, content, timestamp, recipient) VALUES (?, ?, ?, ?)",
+                    (self.username, content, timestamp, None)
+                )
                 log.info("[%s] %s: %s", timestamp, self.username, content)
                 broadcast({"type": "message", "sender": self.username, "content": content, "timestamp": timestamp, "msg_id": msg_id}, exclude=self.username)
                 send_msg(self.sock, {"type": "message", "sender": self.username, "content": content, "timestamp": timestamp, "msg_id": msg_id})
@@ -277,12 +349,30 @@ class ClientHandler(threading.Thread):
                 send_msg(self.sock, {"type": "error", "msg": f"Fil overskrider maks. filstørrelse på {MAX_FILE_SIZE // 1024} KB."})
                 return True
             recipient = msg.get("recipient")
+            room_id   = msg.get("room_id")
             timestamp = datetime.now().strftime("%H:%M:%S")
-            msg_id = self.db_write_returning(
-                "INSERT INTO messages (sender, content, timestamp, recipient) VALUES (?, ?, ?, ?)",
-                (self.username, f"(fil: {filename})", timestamp, recipient)
-            )
-            if recipient:
+
+            if room_id:
+                member = self.db_read("SELECT username FROM room_members WHERE room_id=? AND username=?", (room_id, self.username))
+                if not member:
+                    send_msg(self.sock, {"type": "error", "msg": "Du er ikke medlem af dette rum."})
+                    return True
+                msg_id = self.db_write_returning(
+                    "INSERT INTO messages (sender, content, timestamp, room_id) VALUES (?, ?, ?, ?)",
+                    (self.username, f"(fil: {filename})", timestamp, room_id)
+                )
+                members = self._get_room_members(room_id)
+                log.info("[%s] [rum:%s] %s sendte fil: %s", timestamp, room_id, self.username, filename)
+                broadcast_to_room(
+                    {"type": "file", "sender": self.username, "filename": filename,
+                     "data": data, "timestamp": timestamp, "room_id": room_id, "msg_id": msg_id},
+                    room_id, members
+                )
+            elif recipient:
+                msg_id = self.db_write_returning(
+                    "INSERT INTO messages (sender, content, timestamp, recipient) VALUES (?, ?, ?, ?)",
+                    (self.username, f"(fil: {filename})", timestamp, recipient)
+                )
                 with clients_lock:
                     target = clients.get(recipient)
                 if not target:
@@ -292,6 +382,10 @@ class ClientHandler(threading.Thread):
                 send_msg(target.sock, {"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp, "recipient": recipient, "msg_id": msg_id})
                 send_msg(self.sock,   {"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp, "recipient": recipient, "msg_id": msg_id})
             else:
+                msg_id = self.db_write_returning(
+                    "INSERT INTO messages (sender, content, timestamp, recipient) VALUES (?, ?, ?, ?)",
+                    (self.username, f"(fil: {filename})", timestamp, None)
+                )
                 log.info("[%s] %s sendte fil: %s", timestamp, self.username, filename)
                 broadcast({"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp, "msg_id": msg_id}, exclude=self.username)
                 send_msg(self.sock, {"type": "file", "sender": self.username, "filename": filename, "data": data, "timestamp": timestamp, "msg_id": msg_id})
@@ -304,17 +398,23 @@ class ClientHandler(threading.Thread):
             if not msg_id:
                 send_msg(self.sock, {"type": "error", "msg": "Manglende besked-id."})
                 return True
-            row = self.db_read("SELECT sender, recipient FROM messages WHERE id = ?", (msg_id,))
+            row = self.db_read("SELECT sender, recipient, room_id FROM messages WHERE id = ?", (msg_id,))
             if not row:
                 send_msg(self.sock, {"type": "error", "msg": "Beskeden findes ikke."})
                 return True
-            sender, recipient = row
+            sender, recipient, room_id = row
             if sender != self.username:
                 send_msg(self.sock, {"type": "error", "msg": "Du kan kun slette dine egne beskeder."})
                 return True
             self.db_write("DELETE FROM messages WHERE id = ?", (msg_id,))
             log.info("Bruger '%s' slettede besked id=%s", self.username, msg_id)
-            if recipient:
+            if room_id:
+                members = self._get_room_members(room_id)
+                broadcast_to_room(
+                    {"type": "deleted", "msg_id": msg_id, "chat_key": f"#rum:{room_id}"},
+                    room_id, members
+                )
+            elif recipient:
                 with clients_lock:
                     target = clients.get(recipient)
                 send_msg(self.sock, {"type": "deleted", "msg_id": msg_id, "chat_key": recipient})
@@ -323,6 +423,161 @@ class ClientHandler(threading.Thread):
             else:
                 broadcast({"type": "deleted", "msg_id": msg_id, "chat_key": "#alle"}, exclude=self.username)
                 send_msg(self.sock, {"type": "deleted", "msg_id": msg_id, "chat_key": "#alle"})
+
+        elif t == "create_room":
+            if not self.username:
+                return True
+            room_name = msg.get("name", "").strip()
+            if not room_name:
+                send_msg(self.sock, {"type": "error", "msg": "Rutnavn må ikke være tomt."})
+                return True
+            now = datetime.now().isoformat()
+            room_id = self.db_write_returning(
+                "INSERT INTO chatrooms (name, owner, created) VALUES (?, ?, ?)",
+                (room_name, self.username, now)
+            )
+            self.db_write(
+                "INSERT INTO room_members (room_id, username, joined) VALUES (?, ?, ?)",
+                (room_id, self.username, now)
+            )
+            log.info("'%s' oprettede rum '%s' (id=%s)", self.username, room_name, room_id)
+            send_msg(self.sock, {
+                "type": "room_created",
+                "room": {"id": room_id, "name": room_name, "owner": self.username, "members": [self.username]}
+            })
+
+        elif t == "invite_to_room":
+            if not self.username:
+                return True
+            room_id  = msg.get("room_id")
+            invitee  = msg.get("username", "").strip()
+            if not room_id or not invitee:
+                send_msg(self.sock, {"type": "error", "msg": "Manglende rum-id eller brugernavn."})
+                return True
+            row = self.db_read("SELECT name, owner FROM chatrooms WHERE id = ?", (room_id,))
+            if not row:
+                send_msg(self.sock, {"type": "error", "msg": "Chatrum findes ikke."})
+                return True
+            room_name, owner = row
+            member_check = self.db_read("SELECT username FROM room_members WHERE room_id=? AND username=?", (room_id, self.username))
+            if not member_check:
+                send_msg(self.sock, {"type": "error", "msg": "Du er ikke medlem af dette rum."})
+                return True
+            already = self.db_read("SELECT username FROM room_members WHERE room_id=? AND username=?", (room_id, invitee))
+            if already:
+                send_msg(self.sock, {"type": "error", "msg": f"{invitee} er allerede medlem."})
+                return True
+            target_user = self.db_read("SELECT id FROM users WHERE username = ?", (invitee,))
+            if not target_user:
+                send_msg(self.sock, {"type": "error", "msg": f"Bruger '{invitee}' findes ikke."})
+                return True
+            now = datetime.now().isoformat()
+            try:
+                self.db_write(
+                    "INSERT OR REPLACE INTO room_invites (room_id, inviter, invitee, created) VALUES (?, ?, ?, ?)",
+                    (room_id, self.username, invitee, now)
+                )
+            except Exception:
+                pass
+            log.info("'%s' inviterede '%s' til rum '%s'", self.username, invitee, room_name)
+            send_msg(self.sock, {"type": "room_invite_sent", "room_id": room_id, "room_name": room_name, "invitee": invitee})
+            with clients_lock:
+                target_handler = clients.get(invitee)
+            if target_handler:
+                send_msg(target_handler.sock, {
+                    "type": "room_invite",
+                    "room_id": room_id,
+                    "room_name": room_name,
+                    "inviter": self.username
+                })
+
+        elif t == "room_invite_response":
+            if not self.username:
+                return True
+            room_id  = msg.get("room_id")
+            accepted = msg.get("accepted", False)
+            invite = self.db_read(
+                "SELECT inviter, room_id FROM room_invites WHERE room_id=? AND invitee=?",
+                (room_id, self.username)
+            )
+            if not invite:
+                send_msg(self.sock, {"type": "error", "msg": "Ingen invitation fundet."})
+                return True
+            inviter = invite[0]
+            row = self.db_read("SELECT name FROM chatrooms WHERE id = ?", (room_id,))
+            if not row:
+                send_msg(self.sock, {"type": "error", "msg": "Chatrum findes ikke længere."})
+                return True
+            room_name = row[0]
+            self.db_write("DELETE FROM room_invites WHERE room_id=? AND invitee=?", (room_id, self.username))
+            if accepted:
+                now = datetime.now().isoformat()
+                self.db_write(
+                    "INSERT OR IGNORE INTO room_members (room_id, username, joined) VALUES (?, ?, ?)",
+                    (room_id, self.username, now)
+                )
+                members = self._get_room_members(room_id)
+                log.info("'%s' accepterede invitation til rum '%s'", self.username, room_name)
+                member_objs = self._build_room_obj(room_id, room_name, members)
+                send_msg(self.sock, {"type": "room_joined", "room": member_objs})
+                broadcast_to_room(
+                    {"type": "room_member_joined", "room_id": room_id, "room_name": room_name, "username": self.username},
+                    room_id, members, exclude=self.username
+                )
+            else:
+                log.info("'%s' afslog invitation til rum '%s'", self.username, room_name)
+                with clients_lock:
+                    inv_handler = clients.get(inviter)
+                if inv_handler:
+                    send_msg(inv_handler.sock, {
+                        "type": "room_invite_declined",
+                        "room_id": room_id,
+                        "room_name": room_name,
+                        "username": self.username
+                    })
+
+        elif t == "leave_room":
+            if not self.username:
+                return True
+            room_id = msg.get("room_id")
+            if not room_id:
+                return True
+            row = self.db_read("SELECT name FROM chatrooms WHERE id = ?", (room_id,))
+            if not row:
+                return True
+            room_name = row[0]
+            self.db_write("DELETE FROM room_members WHERE room_id=? AND username=?", (room_id, self.username))
+            members = self._get_room_members(room_id)
+            log.info("'%s' forlod rum '%s'", self.username, room_name)
+            send_msg(self.sock, {"type": "room_left", "room_id": room_id})
+            broadcast_to_room(
+                {"type": "room_member_left", "room_id": room_id, "room_name": room_name, "username": self.username},
+                room_id, members
+            )
+
+        elif t == "get_my_rooms":
+            if not self.username:
+                return True
+            rows = self.db_read_all(
+                """SELECT c.id, c.name, c.owner FROM chatrooms c
+                   JOIN room_members m ON c.id = m.room_id
+                   WHERE m.username = ?""",
+                (self.username,)
+            )
+            rooms = []
+            for room_id, name, owner in rows:
+                members = self._get_room_members(room_id)
+                rooms.append({"id": room_id, "name": name, "owner": owner, "members": members})
+            pending_invites = self.db_read_all(
+                "SELECT room_id, inviter FROM room_invites WHERE invitee = ?",
+                (self.username,)
+            )
+            invites = []
+            for rid, inviter in pending_invites:
+                rrow = self.db_read("SELECT name FROM chatrooms WHERE id = ?", (rid,))
+                if rrow:
+                    invites.append({"room_id": rid, "room_name": rrow[0], "inviter": inviter})
+            send_msg(self.sock, {"type": "my_rooms", "rooms": rooms, "invites": invites})
 
         elif t == "friend_request":
             if not self.username:
@@ -452,6 +707,11 @@ class ClientHandler(threading.Thread):
 
         return True
 
+    def _build_room_obj(self, room_id, room_name, members):
+        row = self.db_read("SELECT owner FROM chatrooms WHERE id = ?", (room_id,))
+        owner = row[0] if row else ""
+        return {"id": room_id, "name": room_name, "owner": owner, "members": members}
+
     def _login_or_register(self, username, password):
         row = self.db_read("SELECT password_hash FROM users WHERE username = ?", (username,))
         if row is None:
@@ -520,6 +780,30 @@ class ClientHandler(threading.Thread):
         })
         send_msg(self.sock, {"type": "presence", "event": "list", "users": online_friends})
         broadcast({"type": "presence", "event": "online", "username": username}, exclude=username)
+
+        room_rows = self.db_read_all(
+            """SELECT c.id, c.name, c.owner FROM chatrooms c
+               JOIN room_members m ON c.id = m.room_id
+               WHERE m.username = ?""",
+            (username,)
+        )
+        rooms = []
+        for room_id, name, owner in room_rows:
+            members = self._get_room_members(room_id)
+            rooms.append({"id": room_id, "name": name, "owner": owner, "members": members})
+
+        pending_invites = self.db_read_all(
+            "SELECT room_id, inviter FROM room_invites WHERE invitee = ?",
+            (username,)
+        )
+        invites = []
+        for rid, inviter in pending_invites:
+            rrow = self.db_read("SELECT name FROM chatrooms WHERE id = ?", (rid,))
+            if rrow:
+                invites.append({"room_id": rid, "room_name": rrow[0], "inviter": inviter})
+
+        if rooms or invites:
+            send_msg(self.sock, {"type": "my_rooms", "rooms": rooms, "invites": invites})
 
 
 def main():
