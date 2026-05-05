@@ -485,8 +485,10 @@ class ChatApp(tk.Tk):
         top_bar = tk.Frame(self.left, bg=self.BG_DARK, height=48)
         top_bar.pack(fill="x")
         top_bar.pack_propagate(False)
-        tk.Label(top_bar, text=f"  {self.username}", font=FONT_TITLE,
-                 bg=self.BG_DARK, fg=self.TEXT_MAIN, anchor="w").pack(side="left", fill="y", padx=4)
+
+        self.username_label = tk.Label(top_bar, text=f"  {self.username}", font=FONT_TITLE,
+                 bg=self.BG_DARK, fg=self.TEXT_MAIN, anchor="w")
+        self.username_label.pack(side="left", fill="y", padx=4)
 
         music_btn = tk.Button(
             top_bar, text="🎵", font=("Segoe UI", 13),
@@ -503,6 +505,14 @@ class ChatApp(tk.Tk):
             cursor="hand2", command=self._open_theme_dialog
         )
         theme_btn.pack(side="right", padx=2)
+
+        settings_btn = tk.Button(
+            top_bar, text="⚙", font=("Segoe UI", 13),
+            bg=self.BG_DARK, fg=self.TEXT_MUTED, relief="flat", bd=0,
+            activebackground=self.BG_DARK, activeforeground=self.TEXT_MAIN,
+            cursor="hand2", command=self._open_settings_dialog
+        )
+        settings_btn.pack(side="right", padx=2)
 
         self.date_label = tk.Label(self.left, text="", font=FONT_SMALL,
                                    bg=self.BG_PANEL, fg=self.TEXT_MUTED)
@@ -611,6 +621,73 @@ class ChatApp(tk.Tk):
             self._show_hub_panel()
         else:
             self._show_chat_panel()
+
+    def _open_settings_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Indstillinger")
+        dialog.configure(bg=self.BG_DARK)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        self.update_idletasks()
+        w, h = 360, 280
+        x = self.winfo_x() + (1100 - w) // 2
+        y = self.winfo_y() + (680 - h) // 2
+        dialog.geometry(f"{w}x{h}+{x}+{y}")
+
+        tk.Label(dialog, text="⚙  Indstillinger", font=FONT_TITLE,
+                 bg=self.BG_DARK, fg=self.TEXT_MAIN).pack(pady=(16, 4))
+
+        tk.Frame(dialog, bg=self.SEPARATOR, height=1).pack(fill="x", padx=20, pady=(4, 12))
+
+        tk.Label(dialog, text="SKIFT BRUGERNAVN", font=("Segoe UI", 8, "bold"),
+                 bg=self.BG_DARK, fg=self.TEXT_MUTED, anchor="w").pack(anchor="w", padx=24)
+
+        tk.Label(dialog, text=f"Nuværende: {self.username}", font=FONT_SMALL,
+                 bg=self.BG_DARK, fg=self.TEXT_MUTED, anchor="w").pack(anchor="w", padx=24, pady=(2, 6))
+
+        new_name_var = tk.StringVar()
+        tk.Entry(dialog, textvariable=new_name_var, font=FONT_INPUT,
+                 bg=self.BG_INPUT, fg=self.TEXT_MAIN, insertbackground=self.TEXT_MAIN,
+                 relief="flat", bd=8, width=28).pack(padx=24, fill="x", pady=(0, 10))
+
+        tk.Label(dialog, text="BEKRÆFT MED ADGANGSKODE", font=("Segoe UI", 8, "bold"),
+                 bg=self.BG_DARK, fg=self.TEXT_MUTED, anchor="w").pack(anchor="w", padx=24)
+
+        pw_var = tk.StringVar()
+        pw_entry = tk.Entry(dialog, textvariable=pw_var, font=FONT_INPUT,
+                            bg=self.BG_INPUT, fg=self.TEXT_MAIN, insertbackground=self.TEXT_MAIN,
+                            relief="flat", bd=8, show="•", width=28)
+        pw_entry.pack(padx=24, fill="x", pady=(2, 8))
+
+        status_lbl = tk.Label(dialog, text="", font=FONT_SMALL,
+                              bg=self.BG_DARK, fg=self.DANGER)
+        status_lbl.pack()
+
+        def do_change():
+            new_name = new_name_var.get().strip()
+            password = pw_var.get()
+            if not new_name:
+                status_lbl.config(text="Nyt brugernavn må ikke være tomt.", fg=self.DANGER)
+                return
+            if not password:
+                status_lbl.config(text="Adgangskode er påkrævet.", fg=self.DANGER)
+                return
+            self._pending_change_dialog = dialog
+            self._pending_change_status = status_lbl
+            send_msg(self.sock, {
+                "type":         "change_username",
+                "new_username": new_name,
+                "password":     password,
+            })
+
+        pw_entry.bind("<Return>", lambda _: do_change())
+
+        tk.Button(dialog, text="Skift brugernavn", font=("Segoe UI", 10, "bold"),
+                  bg=self.ACCENT, fg="white", relief="flat", bd=0,
+                  activebackground=self.ACCENT_HOVER, activeforeground="white",
+                  padx=16, pady=8, cursor="hand2",
+                  command=do_change).pack(pady=(4, 0), padx=24, fill="x")
 
     def _open_music_dialog(self):
         dialog = tk.Toplevel(self)
@@ -1380,6 +1457,91 @@ class ChatApp(tk.Tk):
             self._add_bubble(f"Auth fejl: {msg.get('msg','')}", sender="system",
                              timestamp="", is_system=True)
 
+        elif t == "username_changed":
+            old_username = msg.get("old_username", "")
+            new_username = msg.get("new_username", "")
+            new_token    = msg.get("token", "")
+            self.username = new_username
+            self.token    = new_token
+
+            if new_token:
+                session = load_session()
+                session.update({"username": new_username, "ip": self.ip, "token": new_token})
+                save_session(session)
+
+            if hasattr(self, "username_label"):
+                self.username_label.config(text=f"  {new_username}")
+            self.title("Chat")
+
+            old_history = self.chat_history.pop(old_username, [])
+            old_bubbles = self.bubble_frames.pop(old_username, [])
+            if old_history:
+                self.chat_history[new_username] = old_history
+                self.bubble_frames[new_username] = old_bubbles
+
+            if self.active_chat == old_username:
+                self.active_chat = new_username
+                if hasattr(self, "header_label"):
+                    self.header_label.config(text=f"@ {new_username}")
+
+            self._add_bubble(
+                f"Brugernavn ændret fra '{old_username}' til '{new_username}'.",
+                sender="system", timestamp="", is_system=True
+            )
+
+            if hasattr(self, "_pending_change_dialog"):
+                try:
+                    self._pending_change_dialog.destroy()
+                except Exception:
+                    pass
+                del self._pending_change_dialog
+            if hasattr(self, "_pending_change_status"):
+                del self._pending_change_status
+
+        elif t == "change_username_error":
+            error_msg = msg.get("msg", "Ukendt fejl.")
+            if hasattr(self, "_pending_change_status"):
+                try:
+                    self._pending_change_status.config(text=error_msg, fg=self.DANGER)
+                except Exception:
+                    pass
+            else:
+                self._add_bubble(f"Fejl: {error_msg}", sender="system", timestamp="", is_system=True)
+
+        elif t == "username_changed_broadcast":
+            old_username = msg.get("old_username", "")
+            new_username = msg.get("new_username", "")
+
+            if old_username in self.friends:
+                self.friends.discard(old_username)
+                self.friends.add(new_username)
+                existing = list(self.friend_list.get(0, "end"))
+                display_old = f" {old_username}"
+                display_new = f" {new_username}"
+                if display_old in existing:
+                    idx = existing.index(display_old)
+                    online = self.user_status.pop(old_username, False)
+                    self.user_status[new_username] = online
+                    self.friend_list.delete(idx)
+                    self.friend_list.insert(idx, display_new)
+                    self.friend_list.itemconfig(idx, fg=self.ONLINE_DOT if online else self.DANGER)
+
+            old_history = self.chat_history.pop(old_username, [])
+            old_bubbles = self.bubble_frames.pop(old_username, [])
+            if old_history:
+                self.chat_history[new_username] = old_history
+                self.bubble_frames[new_username] = old_bubbles
+
+            if self.active_chat == old_username:
+                self.active_chat = new_username
+                if hasattr(self, "header_label"):
+                    self.header_label.config(text=f"@ {new_username}")
+
+            self._add_bubble(
+                f"{old_username} hedder nu {new_username}.",
+                sender="system", timestamp="", is_system=True
+            )
+
         elif t == "my_rooms":
             for room in msg.get("rooms", []):
                 self._add_room_to_sidebar(room)
@@ -1404,7 +1566,6 @@ class ChatApp(tk.Tk):
             room_id   = msg.get("room_id")
             room_name = msg.get("room_name", "")
             username  = msg.get("username", "")
-            chat_key  = self._room_chat_key(room_id)
             if room_id in self.rooms:
                 if username not in self.rooms[room_id]["members"]:
                     self.rooms[room_id]["members"].append(username)
@@ -1594,6 +1755,11 @@ class ChatApp(tk.Tk):
         elif t == "error":
             self._add_bubble(f"Fejl: {msg.get('msg','')}", sender="system",
                              timestamp="", is_system=True)
+            if hasattr(self, "_pending_change_status"):
+                try:
+                    self._pending_change_status.config(text=msg.get("msg", ""), fg=self.DANGER)
+                except Exception:
+                    pass
             if self.current_panel == "hub":
                 self._show_hub_notice(msg.get("msg", ""), self.DANGER)
 

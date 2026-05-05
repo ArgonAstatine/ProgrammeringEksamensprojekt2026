@@ -282,6 +282,63 @@ class ClientHandler(threading.Thread):
             else:
                 send_msg(self.sock, {"type": "auth_error", "msg": "Manglende legitimationsoplysninger."})
 
+        elif t == "change_username":
+            if not self.username:
+                send_msg(self.sock, {"type": "error", "msg": "Ikke logget ind."})
+                return True
+            new_username = msg.get("new_username", "").strip()
+            password     = msg.get("password", "")
+            if not new_username:
+                send_msg(self.sock, {"type": "error", "msg": "Nyt brugernavn må ikke være tomt."})
+                return True
+            if len(new_username) < 2:
+                send_msg(self.sock, {"type": "error", "msg": "Brugernavn skal være mindst 2 tegn."})
+                return True
+            if len(new_username) > 32:
+                send_msg(self.sock, {"type": "error", "msg": "Brugernavn må højst være 32 tegn."})
+                return True
+            if new_username == self.username:
+                send_msg(self.sock, {"type": "error", "msg": "Det er allerede dit brugernavn."})
+                return True
+            row = self.db_read("SELECT password_hash FROM users WHERE username = ?", (self.username,))
+            if not row or not verify_password(password, row[0]):
+                send_msg(self.sock, {"type": "change_username_error", "msg": "Forkert adgangskode."})
+                return True
+            existing = self.db_read("SELECT id FROM users WHERE username = ?", (new_username,))
+            if existing:
+                send_msg(self.sock, {"type": "change_username_error", "msg": f"Brugernavnet '{new_username}' er allerede taget."})
+                return True
+            old_username = self.username
+            with db_lock:
+                self.db.execute("UPDATE users SET username = ? WHERE username = ?", (new_username, old_username))
+                self.db.execute("UPDATE sessions SET username = ? WHERE username = ?", (new_username, old_username))
+                self.db.execute("UPDATE messages SET sender = ? WHERE sender = ?", (new_username, old_username))
+                self.db.execute("UPDATE messages SET recipient = ? WHERE recipient = ?", (new_username, old_username))
+                self.db.execute("UPDATE friendships SET requester = ? WHERE requester = ?", (new_username, old_username))
+                self.db.execute("UPDATE friendships SET receiver = ? WHERE receiver = ?", (new_username, old_username))
+                self.db.execute("UPDATE chatrooms SET owner = ? WHERE owner = ?", (new_username, old_username))
+                self.db.execute("UPDATE room_members SET username = ? WHERE username = ?", (new_username, old_username))
+                self.db.execute("UPDATE room_invites SET inviter = ? WHERE inviter = ?", (new_username, old_username))
+                self.db.execute("UPDATE room_invites SET invitee = ? WHERE invitee = ?", (new_username, old_username))
+                self.db.commit()
+                save_db(self.fernet, self.db)
+            with clients_lock:
+                clients.pop(old_username, None)
+                self.username = new_username
+                clients[new_username] = self
+            log.info("Bruger '%s' skiftede navn til '%s'", old_username, new_username)
+            new_token = self._create_session(new_username)
+            send_msg(self.sock, {
+                "type":         "username_changed",
+                "old_username": old_username,
+                "new_username": new_username,
+                "token":        new_token,
+            })
+            broadcast(
+                {"type": "username_changed_broadcast", "old_username": old_username, "new_username": new_username},
+                exclude=new_username
+            )
+
         elif t == "message":
             if not self.username:
                 send_msg(self.sock, {"type": "error", "msg": "Ikke logget ind."})
